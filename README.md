@@ -28,6 +28,7 @@ conflict.
 | SSH key per account       | `core.sshCommand` in each profile (remotes stay plain `git@github.com`) |
 | Commit signing            | `user.signingkey` per profile + global `gpg.format = ssh`               |
 | Claude Code account       | `CLAUDE_CONFIG_DIR` exported via `.envrc` (direnv) per directory        |
+| GitHub CLI account        | `GH_CONFIG_DIR` exported via `.envrc` (direnv) per directory            |
 
 Commits are signed with the same SSH key that authenticates the account — no
 GPG to manage. Enable it globally once:
@@ -57,7 +58,10 @@ The script is **idempotent** (you can run it again after changing `.env`) and do
 3. Writes the git profiles to `~/.config/git-profiles/` and the `includeIf`
    block in `~/.gitconfig` (between markers, without duplicating).
 4. Creates `~/projects/account-a` and `~/projects/account-b` with their `.envrc`
-   pointing to `~/.claude-account-a` and `~/.claude-account-b`.
+   pointing to `~/.claude-account-a` / `~/.config/gh-account-a` (and the same for
+   account B).
+5. Logs `gh` in inside each `GH_CONFIG_DIR`, using that account's
+   `*_GITHUB_TOKEN` when set — otherwise it prints the `gh auth login` to run.
 
 ## Manual steps (once per machine)
 
@@ -88,6 +92,7 @@ cd ~/projects/account-a && git init test && cd test
 git config user.email       # → account A's email
 git config user.signingkey  # → ~/.ssh/id_ed25519_account-a.pub
 echo $CLAUDE_CONFIG_DIR     # → /home/you/.claude-account-a
+gh auth status              # → account A's GitHub user, active
 ssh -i ~/.ssh/id_ed25519_account-a -o IdentitiesOnly=yes -T git@github.com  # → "Hi user-a!"
 ```
 
@@ -96,6 +101,9 @@ ssh -i ~/.ssh/id_ed25519_account-a -o IdentitiesOnly=yes -T git@github.com  # �
 - **`cd` inside a running Claude session does not switch accounts.** Environment
   variables are fixed when the process starts, so direnv cannot retroactively
   change a live session. Exit and start `claude` again from the target folder.
+- **`gh` inside a Claude session follows the session's directory, not your
+  `cd`.** Same reason: `GH_CONFIG_DIR` is inherited from the process env. Start
+  `claude` from the account folder and `gh` follows.
 - **Signatures show as "No signature" in local `git log`** until you configure
   `gpg.ssh.allowedSignersFile`. GitHub verifies against the uploaded signing
   keys regardless, so this is cosmetic.
