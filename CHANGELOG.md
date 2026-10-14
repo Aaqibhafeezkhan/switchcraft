@@ -19,7 +19,7 @@ no longer depends on where it was cloned.
 - `--remote` matching via `includeIf "hasconfig:remote.*.url:…"` (git 2.36+), so
   an identity can follow a repository instead of a path.
 - `switchcraft doctor`: checks keys, their registration on GitHub, the direnv
-  hook, signing settings, symlinked paths that silently defeat `includeIf`, a
+  hook, signing settings, a missing `includeIf` rule for a managed directory, a
   leaking `GH_TOKEN`, Claude Code logins and credential permissions.
 - `switchcraft status`: the identity that applies here, and whether direnv has
   actually made it live.
@@ -55,6 +55,10 @@ no longer depends on where it was cloned.
 - `XDG_CONFIG_HOME` is respected, and `~/.config/git/config` is used as the
   global config when that is what git would read.
 - Credential files moved out of the working tree into `~/.config/switchcraft/`.
+- A directory reached through a symlink now gets its profile. git resolves
+  symlinks before matching `includeIf`, so the generated rules and every lookup
+  use the canonical path. On macOS this was the common case rather than an edge
+  case, since `/var` is a symlink to `/private/var`.
 
 ### Changed
 

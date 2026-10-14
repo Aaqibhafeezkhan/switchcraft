@@ -333,7 +333,9 @@ cmd_link() {
 	sc_envrc_apply "$profile" "$dir"
 	sc_git_apply_includes
 	ok "$dir → $profile"
-	sc_warn_symlink_dir "$dir"
+	local real
+	real="$(sc_real "$dir")"
+	[[ "$real" == "$dir" ]] || note "matched as $real (symlinks resolved, as git does)"
 }
 
 cmd_unlink() {
@@ -343,10 +345,16 @@ cmd_unlink() {
 	profile="$(sc_cfg_profile_for_dir "$dir")"
 	[[ -n "$profile" ]] || die "$dir is not managed by switchcraft"
 
-	sc_cfg_get_all "$profile" dir | grep -qxF "$dir" ||
+	local stored='' d real
+	real="$(sc_real "$dir")"
+	while IFS= read -r d; do
+		[[ -n "$d" ]] || continue
+		[[ "$(sc_real "$d")" == "$real" ]] && stored="$d"
+	done < <(sc_cfg_get_all "$profile" dir)
+	[[ -n "$stored" ]] ||
 		die "$dir is covered by a parent directory of profile '$profile' — unlink that instead"
 
-	sc_cfg_remove_value "$profile" dir "$dir"
+	sc_cfg_remove_value "$profile" dir "$stored"
 	[[ -f "$dir/.envrc" ]] && sc_block_remove "$dir/.envrc" 1
 	sc_git_apply_includes
 	ok "$dir is no longer managed (its files were left alone)"
@@ -391,17 +399,15 @@ cmd_list() {
 # status
 # ------------------------------------------------------------------
 
-# sc_warn_symlink_dir — git matches includeIf against the resolved path, so a
-# directory reached through a symlink silently gets no profile at all. That is
-# precisely the failure this tool exists to prevent, so it is worth shouting.
-sc_warn_symlink_dir() {
+# sc_note_symlink_dir — informational: switchcraft writes canonical paths into
+# the rules, so this is no longer a failure, but it explains why the path in
+# your git config does not look like the one you typed.
+sc_note_symlink_dir() {
 	local d="$1" real
 	[[ -d "$d" ]] || return 0
-	real="$(cd "$d" 2>/dev/null && pwd -P)" || return 0
+	real="$(sc_real "$d")"
 	[[ "$real" == "$d" ]] && return 0
-	warn "$d resolves to $real"
-	note "git matches includeIf against the resolved path — link that one too:"
-	note "switchcraft link <profile> $real"
+	note "$d resolves to $real, which is the path git matches"
 }
 
 _sc_mark() {
@@ -450,7 +456,7 @@ cmd_status() {
 		else
 			printf '  %-11s %s%s%s %s\n' 'effective' "$SC_RED" "${eff:-<none>}" "$SC_OFF" "$(_sc_mark 0)"
 			warn "git here would commit as '${eff:-<none>}', not '$want'"
-			sc_warn_symlink_dir "$dir"
+			sc_note_symlink_dir "$dir"
 			note "then run: switchcraft doctor"
 		fi
 	fi
@@ -495,7 +501,6 @@ cmd_apply() {
 		while IFS= read -r d; do
 			[[ -n "$d" ]] || continue
 			sc_envrc_apply "$p" "$d"
-			sc_warn_symlink_dir "$d"
 		done < <(sc_cfg_get_all "$p" dir)
 
 		token="$(sc_profile_token "$p")"
@@ -684,9 +689,9 @@ cmd_doctor() {
 				continue
 			fi
 			local real
-			real="$(cd "$d" && pwd -P)"
-			if [[ "$real" != "$d" ]]; then
-				_dr_bad "$d resolves to $real" "git ignores the symlinked path: switchcraft link $p $real"
+			real="$(sc_real "$d")"
+			if ! grep -qF "gitdir:$real/" "$gc" 2>/dev/null; then
+				_dr_bad "no includeIf rule covers $real" "switchcraft apply"
 			elif [[ -f "$d/.envrc" ]] && grep -qF "$SC_BEGIN" "$d/.envrc" 2>/dev/null; then
 				_dr_ok "$d is wired up"
 			else

@@ -179,11 +179,13 @@ envolvidas, não bugs do switchcraft.
 - **Não dê Ctrl+C depois de fazer login no Claude Code.** As credenciais são
   gravadas em disco no encerramento normal; o SIGINT mata o processo antes e o
   login é perdido silenciosamente. Saia com `/exit` ou Ctrl+D.
-- **Um caminho de projeto via symlink não recebe perfil.** O git casa o
-  `includeIf` contra o caminho resolvido, então se você chega em
-  `~/projects/trabalho` por um symlink a regra nunca dispara e você commita com
-  a identidade global. O `switchcraft doctor` detecta isso e diz qual caminho
-  real vincular.
+- **O caminho na sua config do git pode não ser o que você digitou.** O git
+  resolve symlinks antes de casar o `includeIf`, então o switchcraft escreve o
+  caminho *canônico* na regra. No macOS isso é o caso comum, não exceção —
+  `/var` é symlink para `/private/var`, então tudo sob `$TMPDIR` passa por um.
+  Escrever o caminho lógico faria a regra nunca disparar, e você commitaria com
+  a identidade global: exatamente a falha que esta ferramenta existe para
+  evitar.
 - **Clone via SSH** (`git@github.com:…`) para usar as chaves por conta. Remotes
   HTTPS também funcionam, pelo arquivo de credenciais do perfil, mas aí a chave
   e a assinatura não entram na história.
@@ -211,7 +213,7 @@ Rode `switchcraft doctor` primeiro — ele cobre quase tudo disto. Depois:
 
 | Sintoma | Causa | Solução |
 | --- | --- | --- |
-| commits com o e-mail errado | o caminho chega por symlink, ou o diretório não está vinculado | `switchcraft status` na pasta; ele aponta o caminho real |
+| commits com o e-mail errado | o diretório não está vinculado, ou um diretório pai está em outro perfil | `switchcraft status` na pasta; ele aponta qual perfil vence |
 | `echo $CLAUDE_CONFIG_DIR` vazio | o hook do direnv não carregou, ou o dir não foi permitido | abra um terminal novo e rode `direnv allow <dir>` |
 | `gh` na conta errada | `GH_TOKEN` ou `GITHUB_TOKEN` exportado no ambiente sobrepõe tudo | `unset GH_TOKEN GITHUB_TOKEN` |
 | commits mostram "No signature" local | falta o arquivo de signatários permitidos | `switchcraft apply` (o GitHub verifica de todo jeito — isso é cosmético) |

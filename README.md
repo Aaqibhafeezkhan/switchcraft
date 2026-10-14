@@ -181,10 +181,13 @@ bugs in switchcraft.
 - **Do not Ctrl+C after logging in to Claude Code.** Credentials are flushed to
   disk on a graceful shutdown; SIGINT kills the process first and the login is
   silently lost. Leave with `/exit` or Ctrl+D.
-- **A symlinked project path gets no profile.** git matches `includeIf` against
-  the resolved path, so if you reach `~/projects/work` through a symlink, the
-  rule never fires and you commit as your global identity. `switchcraft doctor`
-  detects this and tells you which real path to link.
+- **The path in your git config may not look like the one you typed.** git
+  resolves symlinks before matching `includeIf`, so switchcraft writes the
+  *canonical* path into the rule. On macOS that is the normal case rather than
+  an edge case — `/var` is a symlink to `/private/var`, so anything under
+  `$TMPDIR` is affected. Writing the logical path would mean the rule never
+  fires and you commit as your global identity, which is the whole failure this
+  tool exists to prevent.
 - **Clone via SSH** (`git@github.com:…`) to use the per-account keys. HTTPS
   remotes work too, through the per-profile credential file, but then the key
   and the signature are not involved.
@@ -213,7 +216,7 @@ Run `switchcraft doctor` first — it covers most of this. Then:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| commits use the wrong email | the path is reached through a symlink, or the directory is not linked | `switchcraft status` in that folder; it names the real path |
+| commits use the wrong email | the directory is not linked, or a parent directory is linked to another profile | `switchcraft status` in that folder; it names the profile that wins |
 | `echo $CLAUDE_CONFIG_DIR` is empty | direnv's hook is not loaded, or the dir is not allowed | open a new terminal, then `direnv allow <dir>` |
 | `gh` shows the wrong account | `GH_TOKEN` or `GITHUB_TOKEN` is exported in your environment and overrides everything | `unset GH_TOKEN GITHUB_TOKEN` |
 | commits show "No signature" locally | the allowed-signers file is missing | `switchcraft apply` (GitHub verifies regardless — this is cosmetic) |

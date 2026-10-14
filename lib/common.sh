@@ -211,6 +211,20 @@ sc_render() {
 	printf '%s\n' "$body"
 }
 
+# sc_real <path> — the canonical path, with every symlink resolved.
+# git resolves symlinks before matching includeIf, so a rule written for the
+# logical path never fires. macOS makes this routine rather than exotic: /var
+# is a symlink to /private/var, so anything under $TMPDIR is affected.
+sc_real() {
+	local p
+	p="$(sc_abs "$1")"
+	if [[ -d "$p" ]]; then
+		(cd "$p" 2>/dev/null && pwd -P) || printf '%s\n' "$p"
+	else
+		printf '%s\n' "$p"
+	fi
+}
+
 # sc_slug_ok <slug> — profile names become directory and file names.
 sc_slug_ok() { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; }
 

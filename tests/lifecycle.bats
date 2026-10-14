@@ -119,3 +119,43 @@ load test_helper
 	sc uninstall >/dev/null 2>&1
 	[ -z "$(git config --global commit.gpgsign || true)" ]
 }
+
+@test "a directory reached through a symlink still gets its identity" {
+	# Not exotic: on macOS /var is a symlink to /private/var, so anything under
+	# $TMPDIR is reached through one. git resolves the path before matching
+	# includeIf, so the rule has to be written canonical.
+	mkdir -p "$SANDBOX/real/code"
+	ln -s "$SANDBOX/real" "$SANDBOX/via-link"
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	add_profile work work@company.com
+	sc link work "$SANDBOX/via-link/code" >/dev/null 2>&1
+
+	git -C "$SANDBOX/via-link/code" init -q
+	[ "$(git -C "$SANDBOX/via-link/code" config user.email)" = "work@company.com" ]
+
+	local resolved
+	resolved="$(cd "$SANDBOX/real/code" && pwd -P)"
+	gitconfig | grep -qF "gitdir:$resolved/"
+}
+
+@test "status and unlink work from a symlinked path" {
+	mkdir -p "$SANDBOX/real/code"
+	ln -s "$SANDBOX/real" "$SANDBOX/via-link"
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	add_profile work work@company.com
+	sc link work "$SANDBOX/real/code" >/dev/null 2>&1
+
+	run sc status "$SANDBOX/via-link/code"
+	[[ "$output" == *work* ]]
+	[[ "$output" != *unmanaged* ]]
+
+	local resolved
+	resolved="$(cd "$SANDBOX/real/code" && pwd -P)"
+	gitconfig | grep -qF "gitdir:$resolved/"
+
+	run sc unlink "$SANDBOX/via-link/code"
+	[ "$status" -eq 0 ]
+	# only that directory's rule goes; the profile still owns projects/work
+	! gitconfig | grep -qF "gitdir:$resolved/"
+	gitconfig | grep -q 'git-profiles/work'
+}

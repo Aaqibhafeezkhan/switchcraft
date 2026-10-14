@@ -179,10 +179,14 @@ sc_cfg_remove_profile() {
 # directory, so a nested link wins over its parent. Prints "" when none.
 sc_cfg_profile_for_dir() {
 	local target="$1" p d best_p='' best_len=0
+	# Both sides canonical, so a lookup from a symlinked path still finds its
+	# profile and agrees with the includeIf rule git will apply.
+	target="$(sc_real "$target")"
 	while IFS= read -r p; do
 		[[ -n "$p" ]] || continue
 		while IFS= read -r d; do
 			[[ -n "$d" ]] || continue
+			d="$(sc_real "$d")"
 			if [[ "$target" == "$d" || "$target" == "$d"/* ]]; then
 				if ((${#d} > best_len)); then
 					best_len=${#d}

@@ -62,8 +62,9 @@ sc_git_includes_body() {
 		path="$(sc_git_profile_file "$p")"
 		while IFS= read -r d; do
 			[[ -n "$d" ]] || continue
-			# The trailing slash is what makes git match the whole subtree.
-			printf '[includeIf "gitdir:%s/"]\n\tpath = %s\n' "$d" "$path"
+			# Canonical, because git resolves the path before matching; and the
+			# trailing slash is what makes it match the whole subtree.
+			printf '[includeIf "gitdir:%s/"]\n\tpath = %s\n' "$(sc_real "$d")" "$path"
 		done < <(sc_cfg_get_all "$p" dir)
 		while IFS= read -r r; do
 			[[ -n "$r" ]] || continue
