@@ -4,7 +4,11 @@
 
 setup() {
 	SC_REPO="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
-	SANDBOX="$(mktemp -d "${BATS_TEST_TMPDIR:-/tmp}/sc.XXXXXX")"
+	# Canonical, so a test can compare paths literally. On macOS $TMPDIR sits
+	# under /var, which is a symlink to /private/var, and switchcraft writes the
+	# resolved path into its rules — as git requires. The two tests that cover
+	# symlinked paths create their own symlink instead of relying on this.
+	SANDBOX="$(cd "$(mktemp -d "${BATS_TEST_TMPDIR:-/tmp}/sc.XXXXXX")" && pwd -P)"
 
 	export HOME="$SANDBOX"
 	export XDG_CONFIG_HOME="$SANDBOX/.config"
