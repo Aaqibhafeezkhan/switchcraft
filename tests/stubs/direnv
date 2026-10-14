@@ -1,0 +1,7 @@
+#!/bin/sh
+# Test stub: direnv is not needed to verify what switchcraft writes.
+case "$1" in
+version) echo "2.34.0-stub" ;;
+*) : ;;
+esac
+exit 0

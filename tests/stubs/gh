@@ -1,0 +1,18 @@
+#!/bin/sh
+# Test stub. Reports "logged in" only when the config dir holds our marker
+# file, so tests can exercise both branches.
+case "$1 $2" in
+"auth status")
+	[ -f "${GH_CONFIG_DIR:-/nonexistent}/.stub-logged-in" ] && exit 0
+	exit 1
+	;;
+"auth login")
+	mkdir -p "${GH_CONFIG_DIR:?}" && touch "$GH_CONFIG_DIR/.stub-logged-in"
+	exit 0
+	;;
+"api user")
+	echo "gh-stub-user"
+	exit 0
+	;;
+esac
+exit 0
