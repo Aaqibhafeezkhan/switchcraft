@@ -1,0 +1,827 @@
+#!/usr/bin/env bash
+# ==================================================================
+# switchcraft — the folder decides who you are.
+#
+#   switchcraft init                  set up the config
+#   switchcraft add <profile>         create an identity
+#   switchcraft link <profile> <dir>  bind any directory to it
+#   switchcraft status                who am I here?
+#   switchcraft doctor                what is still missing?
+#
+# https://github.com/FernandoPazCavalcante/switchcraft
+# ==================================================================
+set -euo pipefail
+
+SC_VERSION='2.0.0'
+
+# Resolve our own location through any symlink, so `switchcraft` on PATH still
+# finds lib/ and templates/ next to the real script.
+_sc_self="${BASH_SOURCE[0]}"
+while [[ -L "$_sc_self" ]]; do
+	_sc_target="$(readlink "$_sc_self")"
+	case "$_sc_target" in
+	/*) _sc_self="$_sc_target" ;;
+	*) _sc_self="$(dirname "$_sc_self")/$_sc_target" ;;
+	esac
+done
+SC_ROOT="${SWITCHCRAFT_ROOT:-$(cd "$(dirname "$_sc_self")/.." && pwd)}"
+SC_LIB="$SC_ROOT/lib"
+SC_TEMPLATES="$SC_ROOT/templates"
+export SC_ROOT SC_LIB SC_TEMPLATES
+
+for _sc_mod in common config git ssh direnv gh; do
+	# shellcheck source=/dev/null
+	source "$SC_LIB/$_sc_mod.sh"
+done
+
+# ------------------------------------------------------------------
+# Help
+# ------------------------------------------------------------------
+
+usage() {
+	cat <<EOF
+${SC_BOLD}switchcraft${SC_OFF} $SC_VERSION — the folder decides who you are.
+
+${SC_BOLD}USAGE${SC_OFF}
+  switchcraft <command> [options]
+
+${SC_BOLD}SETUP${SC_OFF}
+  init                      create the config (interactive)
+  add <profile>             add an identity and its directory
+  remove <profile>          drop an identity
+  apply                     reconcile everything from the config
+
+${SC_BOLD}DIRECTORIES${SC_OFF}
+  link <profile> <dir>      bind any directory to a profile
+  unlink <dir>              stop managing a directory
+
+${SC_BOLD}INSPECT${SC_OFF}
+  status [dir]              which identity applies here
+  list                      every profile and where it applies
+  doctor                    check the setup and say what is missing
+
+${SC_BOLD}REMOVAL${SC_OFF}
+  uninstall                 reverse every change switchcraft made
+
+${SC_BOLD}GLOBAL OPTIONS${SC_OFF}
+  -n, --dry-run             print what would change, write nothing
+  -y, --yes                 assume yes for every prompt
+  -h, --help                this help
+  -V, --version             version
+
+${SC_BOLD}OPTIONS for add${SC_OFF}
+  --name <str>              git user.name
+  --email <str>             git user.email
+  --github-user <str>       GitHub login
+  --dir <path>              directory to bind (repeatable)
+  --remote <glob>           match by remote URL instead (repeatable, git>=2.36)
+  --token-cmd <cmd>         command that prints a PAT (e.g. "pass show gh/work")
+  --no-dir                  create the profile without binding a directory
+
+Config: $(sc_cfg_path)
+EOF
+}
+
+# ------------------------------------------------------------------
+# init
+# ------------------------------------------------------------------
+
+cmd_init() {
+	local root='' signing='true'
+	while (($#)); do
+		case "$1" in
+		--projects-root)
+			root="$(sc_abs "$2")"
+			shift 2
+			;;
+		--no-signing)
+			signing='false'
+			shift
+			;;
+		*) die "init: unknown option $1" ;;
+		esac
+	done
+
+	if sc_cfg_exists; then
+		ok "config already exists: $(sc_cfg_path)"
+	else
+		if [[ -z "$root" ]]; then
+			if [[ -t 0 ]]; then
+				local reply
+				printf 'Where do your project folders live? [%s/projects] ' "$HOME"
+				read -r reply || true
+				root="$(sc_abs "${reply:-$HOME/projects}")"
+			else
+				root="$HOME/projects"
+			fi
+		fi
+		sc_cfg_init "$root" "$signing"
+		ok "config created: $(sc_cfg_path)"
+	fi
+
+	sc_migrate_legacy_env
+
+	if [[ -z "$(sc_cfg_profiles)" ]]; then
+		info "next: add your identities"
+		note "switchcraft add personal --name 'Your Name' --email you@example.com --github-user you"
+		note "switchcraft add work     --name 'Your Name' --email you@company.com --github-user you-work"
+	fi
+}
+
+# sc_migrate_legacy_env — carry a pre-2.0 .env in the clone over to the config.
+# The legacy file is shell, so it is read once inside a subshell that prints
+# plain key=value lines; nothing from it is evaluated in our own shell.
+sc_migrate_legacy_env() {
+	local env_file="$SC_ROOT/.env" dump
+	[[ -f "$env_file" ]] || return 0
+	[[ -z "$(sc_cfg_profiles)" ]] || return 0
+
+	info "found a v1 .env — migrating it"
+	dump="$(
+		(
+			# shellcheck source=/dev/null
+			source "$env_file" >/dev/null 2>&1 || exit 0
+			printf 'root=%s\n' "${PROJECTS_ROOT:-}"
+			for p in ${PROFILES:-A B}; do
+				s="${p}_SLUG" n="${p}_GIT_NAME" e="${p}_GIT_EMAIL" u="${p}_GITHUB_USER"
+				printf 'profile=%s\t%s\t%s\t%s\n' \
+					"${!s:-}" "${!n:-}" "${!e:-}" "${!u:-}"
+			done
+		) || true
+	)"
+
+	local root slug name email ghuser
+	root="$(sed -n 's/^root=//p' <<<"$dump" | head -n 1)"
+	[[ -n "$root" ]] && sc_cfg_set "" projects_root "$(sc_abs "$root")"
+	root="${root:-$HOME/projects}"
+
+	while IFS=$'\t' read -r slug name email ghuser; do
+		[[ -n "$slug" && -n "$email" ]] || continue
+		sc_cfg_has "$slug" && continue
+		sc_cfg_add_profile "$slug"
+		sc_cfg_append "$slug" name "$name"
+		sc_cfg_append "$slug" email "$email"
+		[[ -n "$ghuser" ]] && sc_cfg_append "$slug" github_user "$ghuser"
+		sc_cfg_append "$slug" dir "$(sc_abs "$root/$slug")"
+		ok "migrated profile: $slug"
+	done < <(sed -n 's/^profile=//p' <<<"$dump")
+
+	warn "tokens were NOT migrated — v2 reads them from a command instead:"
+	note "switchcraft add <profile> --token-cmd 'pass show github/<profile>'"
+	note "you can now delete $env_file"
+}
+
+# ------------------------------------------------------------------
+# add / remove
+# ------------------------------------------------------------------
+
+cmd_add() {
+	local profile='' name='' email='' ghuser='' token_cmd='' no_dir=0
+	local -a dirs=() remotes=()
+
+	while (($#)); do
+		case "$1" in
+		--name)
+			name="$2"
+			shift 2
+			;;
+		--email)
+			email="$2"
+			shift 2
+			;;
+		--github-user)
+			ghuser="$2"
+			shift 2
+			;;
+		--dir)
+			dirs+=("$(sc_abs "$2")")
+			shift 2
+			;;
+		--remote)
+			remotes+=("$2")
+			shift 2
+			;;
+		--token-cmd)
+			token_cmd="$2"
+			shift 2
+			;;
+		--no-dir)
+			no_dir=1
+			shift
+			;;
+		-*) die "add: unknown option $1" ;;
+		*)
+			[[ -z "$profile" ]] || die "add: unexpected argument '$1'"
+			profile="$1"
+			shift
+			;;
+		esac
+	done
+
+	[[ -n "$profile" ]] || die "add: give the profile a name, e.g. switchcraft add work"
+	sc_slug_ok "$profile" || die "add: '$profile' must be lowercase letters, digits, . _ or -"
+	sc_cfg_exists || cmd_init
+	sc_cfg_has "$profile" && die "profile '$profile' already exists — see: switchcraft list"
+
+	if [[ -t 0 ]]; then
+		[[ -n "$name" ]] || {
+			printf 'Full name for git commits: '
+			read -r name || true
+		}
+		[[ -n "$email" ]] || {
+			printf 'Email for %s: ' "$profile"
+			read -r email || true
+		}
+		[[ -n "$ghuser" ]] || {
+			printf 'GitHub login (optional): '
+			read -r ghuser || true
+		}
+	fi
+	[[ -n "$name" ]] || die "add: --name is required"
+	[[ -n "$email" ]] || die "add: --email is required"
+
+	local root
+	root="$(sc_cfg_global projects_root "$HOME/projects")"
+	if ((${#dirs[@]} == 0)) && ((no_dir == 0)) && ((${#remotes[@]} == 0)); then
+		dirs=("$root/$profile")
+	fi
+
+	sc_cfg_add_profile "$profile"
+	sc_cfg_append "$profile" name "$name"
+	sc_cfg_append "$profile" email "$email"
+	[[ -n "$ghuser" ]] && sc_cfg_append "$profile" github_user "$ghuser"
+	[[ -n "$token_cmd" ]] && sc_cfg_append "$profile" token_cmd "$token_cmd"
+	local d r
+	for d in "${dirs[@]+"${dirs[@]}"}"; do sc_cfg_append "$profile" dir "$d"; done
+	for r in "${remotes[@]+"${remotes[@]}"}"; do sc_cfg_append "$profile" remote "$r"; done
+	ok "profile '$profile' added"
+
+	if is_dry; then
+		note "stopping here: with nothing written there is no state to reconcile"
+		return 0
+	fi
+	cmd_apply
+}
+
+cmd_remove() {
+	local profile='' purge=0
+	while (($#)); do
+		case "$1" in
+		--purge)
+			purge=1
+			shift
+			;;
+		-*) die "remove: unknown option $1" ;;
+		*)
+			profile="$1"
+			shift
+			;;
+		esac
+	done
+	[[ -n "$profile" ]] || die "remove: which profile?"
+	sc_cfg_require
+	sc_cfg_require_profile "$profile"
+
+	local d
+	while IFS= read -r d; do
+		[[ -n "$d" ]] || continue
+		[[ -f "$d/.envrc" ]] && sc_block_remove "$d/.envrc" 1
+	done < <(sc_cfg_get_all "$profile" dir)
+
+	local pf
+	pf="$(sc_git_profile_file "$profile")"
+	[[ -f "$pf" ]] && sc_run rm -f "$pf"
+
+	if ((purge)); then
+		local cdir gdir key
+		cdir="$(sc_profile_claude_dir "$profile")"
+		gdir="$(sc_profile_gh_dir "$profile")"
+		key="$(sc_profile_key "$profile")"
+		if confirm "delete $cdir, $gdir and $key* ? (conversation history and keys are lost)"; then
+			sc_run rm -rf "$cdir" "$gdir"
+			sc_run rm -f "$key" "$key.pub" "$(sc_git_cred_file "$profile")"
+			warn "remember to delete the key from GitHub too"
+		fi
+	fi
+
+	sc_cfg_remove_profile "$profile"
+	sc_git_apply_includes
+	ok "profile '$profile' removed"
+	((purge)) || note "its key, Claude and gh dirs were kept — use --purge to delete them"
+}
+
+# ------------------------------------------------------------------
+# link / unlink
+# ------------------------------------------------------------------
+
+cmd_link() {
+	local profile="${1:-}" dir="${2:-}"
+	[[ -n "$profile" && -n "$dir" ]] || die "usage: switchcraft link <profile> <dir>"
+	sc_cfg_require
+	sc_cfg_require_profile "$profile"
+	dir="$(sc_abs "$dir")"
+
+	local owner
+	owner="$(sc_cfg_profile_for_dir "$dir")"
+	[[ "$owner" == "$profile" ]] && {
+		ok "$dir already belongs to '$profile'"
+		return 0
+	}
+
+	sc_cfg_get_all "$profile" dir | grep -qxF "$dir" || sc_cfg_append "$profile" dir "$dir"
+	sc_mkdir "$dir"
+	sc_envrc_apply "$profile" "$dir"
+	sc_git_apply_includes
+	ok "$dir → $profile"
+	sc_warn_symlink_dir "$dir"
+}
+
+cmd_unlink() {
+	local dir="${1:-$PWD}" profile
+	sc_cfg_require
+	dir="$(sc_abs "$dir")"
+	profile="$(sc_cfg_profile_for_dir "$dir")"
+	[[ -n "$profile" ]] || die "$dir is not managed by switchcraft"
+
+	sc_cfg_get_all "$profile" dir | grep -qxF "$dir" ||
+		die "$dir is covered by a parent directory of profile '$profile' — unlink that instead"
+
+	sc_cfg_remove_value "$profile" dir "$dir"
+	[[ -f "$dir/.envrc" ]] && sc_block_remove "$dir/.envrc" 1
+	sc_git_apply_includes
+	ok "$dir is no longer managed (its files were left alone)"
+}
+
+# ------------------------------------------------------------------
+# list
+# ------------------------------------------------------------------
+
+cmd_list() {
+	sc_cfg_require
+	local p d r profiles
+	profiles="$(sc_cfg_profiles)"
+	[[ -n "$profiles" ]] || {
+		warn "no profiles yet — run: switchcraft add <name>"
+		return 0
+	}
+	while IFS= read -r p; do
+		[[ -n "$p" ]] || continue
+		printf '%s%s%s\n' "$SC_BOLD" "$p" "$SC_OFF"
+		printf '  %-12s %s <%s>\n' 'identity' "$(sc_cfg_get "$p" name)" "$(sc_cfg_get "$p" email)"
+		local ghuser
+		ghuser="$(sc_cfg_get "$p" github_user)"
+		[[ -n "$ghuser" ]] && printf '  %-12s %s\n' 'github' "$ghuser"
+		printf '  %-12s %s' 'ssh key' "$(sc_profile_key "$p")"
+		[[ -f "$(sc_profile_key "$p")" ]] && printf ' %s(present)%s\n' "$SC_DIM" "$SC_OFF" || printf ' %s(missing)%s\n' "$SC_YELLOW" "$SC_OFF"
+		printf '  %-12s %s\n' 'claude' "$(sc_profile_claude_dir "$p")"
+		printf '  %-12s %s\n' 'gh' "$(sc_profile_gh_dir "$p")"
+		while IFS= read -r d; do
+			[[ -n "$d" ]] || continue
+			printf '  %-12s %s\n' 'dir' "$d"
+		done < <(sc_cfg_get_all "$p" dir)
+		while IFS= read -r r; do
+			[[ -n "$r" ]] || continue
+			printf '  %-12s %s\n' 'remote' "$r"
+		done < <(sc_cfg_get_all "$p" remote)
+		printf '\n'
+	done <<<"$profiles"
+}
+
+# ------------------------------------------------------------------
+# status
+# ------------------------------------------------------------------
+
+# sc_warn_symlink_dir — git matches includeIf against the resolved path, so a
+# directory reached through a symlink silently gets no profile at all. That is
+# precisely the failure this tool exists to prevent, so it is worth shouting.
+sc_warn_symlink_dir() {
+	local d="$1" real
+	[[ -d "$d" ]] || return 0
+	real="$(cd "$d" 2>/dev/null && pwd -P)" || return 0
+	[[ "$real" == "$d" ]] && return 0
+	warn "$d resolves to $real"
+	note "git matches includeIf against the resolved path — link that one too:"
+	note "switchcraft link <profile> $real"
+}
+
+_sc_mark() {
+	if [[ "$1" == 1 ]]; then
+		printf '%s✓%s' "$SC_GREEN" "$SC_OFF"
+	else
+		printf '%s✗%s' "$SC_YELLOW" "$SC_OFF"
+	fi
+}
+
+cmd_status() {
+	sc_cfg_require
+	local dir="${1:-$PWD}" profile cdir gdir active_c=0 active_g=0
+	dir="$(sc_abs "$dir")"
+	profile="$(sc_cfg_profile_for_dir "$dir")"
+
+	printf '\n  %-11s %s\n' 'directory' "$dir"
+
+	if [[ -z "$profile" ]]; then
+		printf '  %-11s %sunmanaged%s\n\n' 'profile' "$SC_YELLOW" "$SC_OFF"
+		note "bind it with: switchcraft link <profile> $dir"
+		local rp
+		rp="$(cd "$dir" 2>/dev/null && pwd -P || printf '%s' "$dir")"
+		[[ "$rp" != "$dir" ]] && note "note: it resolves to $rp"
+		return 0
+	fi
+
+	cdir="$(sc_profile_claude_dir "$profile")"
+	gdir="$(sc_profile_gh_dir "$profile")"
+	[[ "${CLAUDE_CONFIG_DIR:-}" == "$cdir" ]] && active_c=1
+	[[ "${GH_CONFIG_DIR:-}" == "$gdir" ]] && active_g=1
+
+	printf '  %-11s %s%s%s\n' 'profile' "$SC_BOLD" "$profile" "$SC_OFF"
+	printf '  %-11s %s <%s>\n' 'git' "$(sc_cfg_get "$profile" name)" "$(sc_cfg_get "$profile" email)"
+	printf '  %-11s %s\n' 'ssh key' "$(sc_profile_key "$profile")"
+	printf '  %-11s %s %s\n' 'claude' "$cdir" "$(_sc_mark "$active_c")"
+	printf '  %-11s %s %s\n' 'gh' "$gdir" "$(_sc_mark "$active_g")"
+
+	# The effective identity is what git will actually stamp on a commit.
+	if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+		local eff want
+		eff="$(git -C "$dir" config user.email 2>/dev/null || true)"
+		want="$(sc_cfg_get "$profile" email)"
+		if [[ "$eff" == "$want" ]]; then
+			printf '  %-11s %s %s\n' 'effective' "$eff" "$(_sc_mark 1)"
+		else
+			printf '  %-11s %s%s%s %s\n' 'effective' "$SC_RED" "${eff:-<none>}" "$SC_OFF" "$(_sc_mark 0)"
+			warn "git here would commit as '${eff:-<none>}', not '$want'"
+			sc_warn_symlink_dir "$dir"
+			note "then run: switchcraft doctor"
+		fi
+	fi
+
+	printf '\n'
+	if ((active_c == 0 || active_g == 0)); then
+		note "Claude/gh not active in this shell — open a new terminal or: direnv allow $dir"
+	fi
+}
+
+# ------------------------------------------------------------------
+# apply — the whole state machine, idempotent by construction
+# ------------------------------------------------------------------
+
+cmd_apply() {
+	sc_cfg_require
+	local profiles p d email ghuser token cdir gdir
+	profiles="$(sc_cfg_profiles)"
+	[[ -n "$profiles" ]] || die "no profiles yet — run: switchcraft add <name>"
+
+	# One pristine copy of the global git config before anything touches it —
+	# including `git config --global`, which runs before the block is written.
+	sc_backup_once "$(sc_resolve "$(sc_git_global_config)")"
+
+	info "direnv"
+	sc_direnv_install || true
+	sc_direnv_hook_apply
+
+	while IFS= read -r p; do
+		[[ -n "$p" ]] || continue
+		info "profile $p"
+		email="$(sc_cfg_get "$p" email)"
+		ghuser="$(sc_cfg_get "$p" github_user)"
+		cdir="$(sc_profile_claude_dir "$p")"
+		gdir="$(sc_profile_gh_dir "$p")"
+
+		sc_ssh_ensure_key "$p" "$email" || true
+		sc_git_write_profile "$p"
+		ok "git profile → $(sc_git_profile_file "$p")"
+		sc_mkdir "$cdir" "$gdir"
+
+		while IFS= read -r d; do
+			[[ -n "$d" ]] || continue
+			sc_envrc_apply "$p" "$d"
+			sc_warn_symlink_dir "$d"
+		done < <(sc_cfg_get_all "$p" dir)
+
+		token="$(sc_profile_token "$p")"
+		if [[ -n "$token" && -n "$ghuser" ]]; then
+			sc_git_cred_upsert "$(sc_git_cred_file "$p")" "$ghuser" "$token"
+			ok "HTTPS credentials → $(sc_git_cred_file "$p")"
+			if sc_gh_logged_in "$gdir"; then
+				ok "gh already authenticated"
+			elif sc_gh_login "$gdir" "$token"; then
+				ok "gh authenticated as $ghuser"
+			else
+				warn "gh login failed — run: GH_CONFIG_DIR=$gdir gh auth login"
+			fi
+		elif has_cmd gh && ! sc_gh_logged_in "$gdir"; then
+			note "gh not authenticated: GH_CONFIG_DIR=$gdir gh auth login"
+		fi
+	done <<<"$profiles"
+
+	sc_git_write_signers
+	[[ "$(sc_cfg_global sign_commits true)" == true ]] && sc_git_enable_signing
+	# Last, so git config's own appends cannot land after the block and so the
+	# profile's user.* wins over anything global.
+	sc_git_apply_includes
+
+	printf '\n'
+	info "manual steps left (once per machine, per account)"
+	while IFS= read -r p; do
+		[[ -n "$p" ]] || continue
+		[[ -f "$(sc_profile_key "$p").pub" ]] || continue
+		note "$p → add $(sc_profile_key "$p").pub to GitHub twice: Authentication key AND Signing key"
+	done <<<"$profiles"
+	while IFS= read -r p; do
+		[[ -n "$p" ]] || continue
+		d="$(sc_cfg_get_all "$p" dir | head -n 1)"
+		[[ -n "$d" ]] || continue
+		note "$p → cd $d && claude   # /login, then leave with /exit (never Ctrl+C)"
+	done <<<"$profiles"
+	printf '\n'
+	note "then verify with: switchcraft doctor"
+}
+
+# ------------------------------------------------------------------
+# doctor
+# ------------------------------------------------------------------
+
+SC_DR_FAIL=0
+_dr_ok() { printf '  %s✓%s %s\n' "$SC_GREEN" "$SC_OFF" "$*"; }
+_dr_bad() {
+	printf '  %s✗%s %s\n' "$SC_RED" "$SC_OFF" "$1"
+	[[ -n "${2:-}" ]] && printf '    %s→ %s%s\n' "$SC_DIM" "$2" "$SC_OFF"
+	SC_DR_FAIL=$((SC_DR_FAIL + 1))
+	return 0
+}
+_dr_warn() {
+	printf '  %s!%s %s\n' "$SC_YELLOW" "$SC_OFF" "$1"
+	[[ -n "${2:-}" ]] && printf '    %s→ %s%s\n' "$SC_DIM" "$2" "$SC_OFF"
+	return 0
+}
+
+cmd_doctor() {
+	sc_cfg_require
+	local p d rc kind gc
+
+	printf '\n%senvironment%s\n' "$SC_BOLD" "$SC_OFF"
+	if has_cmd direnv; then
+		_dr_ok "direnv $(direnv version 2>/dev/null || true)"
+	else
+		_dr_bad "direnv is not installed" "https://direnv.net/docs/installation.html"
+	fi
+	kind="$(sc_shell_kind)"
+	rc="$(sc_shell_rc "$kind")"
+	if [[ -z "$rc" ]]; then
+		_dr_warn "shell '$kind' is not auto-configured" "add direnv's hook manually"
+	elif [[ -f "$rc" ]] && grep -qF 'direnv hook' "$rc" 2>/dev/null; then
+		_dr_ok "direnv hook present in $rc"
+	else
+		_dr_bad "direnv hook missing from $rc" "switchcraft apply"
+	fi
+	if has_cmd git; then
+		if sc_git_supports_hasconfig; then
+			_dr_ok "git $(git --version | awk '{print $3}') (supports remote matching)"
+		else
+			_dr_warn "git $(git --version | awk '{print $3}') is older than 2.36" \
+				"'remote =' rules are ignored; directory rules still work"
+		fi
+	else
+		_dr_bad "git is not installed"
+	fi
+	if [[ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]]; then
+		_dr_warn "GH_TOKEN/GITHUB_TOKEN is set in your environment" \
+			"it overrides the per-directory gh account — unset it for normal work"
+	fi
+
+	printf '\n%sglobal git config%s\n' "$SC_BOLD" "$SC_OFF"
+	gc="$(sc_git_global_config)"
+	if [[ -f "$gc" ]] && grep -qF "$SC_BEGIN" "$gc" 2>/dev/null; then
+		_dr_ok "switchcraft block present in $gc"
+	else
+		_dr_bad "switchcraft block missing from $gc" "switchcraft apply"
+	fi
+	if [[ "$(sc_cfg_global sign_commits true)" == true ]]; then
+		if [[ "$(git config --global gpg.format 2>/dev/null)" == ssh ]]; then
+			_dr_ok "gpg.format = ssh"
+		else
+			_dr_bad "gpg.format is not ssh" "switchcraft apply"
+		fi
+		if [[ "$(git config --global commit.gpgsign 2>/dev/null)" == true ]]; then
+			_dr_ok "commit.gpgsign = true"
+		else
+			_dr_bad "commit signing is off" "switchcraft apply"
+		fi
+		if [[ -f "$(sc_git_signers_file)" ]]; then
+			_dr_ok "allowed signers file written"
+		else
+			_dr_warn "no allowed signers file" "local 'git log --show-signature' will say No signature"
+		fi
+	fi
+
+	while IFS= read -r p; do
+		[[ -n "$p" ]] || continue
+		printf '\n%sprofile %s%s\n' "$SC_BOLD" "$p" "$SC_OFF"
+		local key pub ghuser who cdir gdir cred
+		key="$(sc_profile_key "$p")"
+		pub="$key.pub"
+		ghuser="$(sc_cfg_get "$p" github_user)"
+		cdir="$(sc_profile_claude_dir "$p")"
+		gdir="$(sc_profile_gh_dir "$p")"
+		cred="$(sc_git_cred_file "$p")"
+
+		if [[ -f "$(sc_git_profile_file "$p")" ]]; then
+			_dr_ok "git profile rendered"
+		else
+			_dr_bad "git profile missing" "switchcraft apply"
+		fi
+
+		if [[ -f "$key" && -f "$pub" ]]; then
+			_dr_ok "ssh key present"
+			if [[ "${SC_OFFLINE:-0}" != 1 ]]; then
+				who="$(sc_ssh_test "$p" || true)"
+				if [[ -z "$who" ]]; then
+					_dr_bad "key not accepted by GitHub" "add $pub as an Authentication key"
+				elif [[ -n "$ghuser" && "$who" != "$ghuser" ]]; then
+					_dr_bad "key belongs to '$who', config says '$ghuser'" "check which account holds the key"
+				else
+					_dr_ok "key authenticates as $who"
+				fi
+			fi
+		else
+			_dr_bad "ssh key missing" "switchcraft apply"
+		fi
+
+		if has_cmd gh; then
+			if sc_gh_logged_in "$gdir"; then
+				who="$(sc_gh_user "$gdir" || true)"
+				if [[ -n "$ghuser" && -n "$who" && "$who" != "$ghuser" ]]; then
+					_dr_bad "gh is logged in as '$who', config says '$ghuser'"
+				else
+					_dr_ok "gh authenticated${who:+ as $who}"
+				fi
+			else
+				_dr_bad "gh not authenticated" "GH_CONFIG_DIR=$gdir gh auth login"
+			fi
+		fi
+
+		if [[ -f "$cdir/.credentials.json" ]]; then
+			_dr_ok "Claude Code logged in"
+		else
+			_dr_bad "Claude Code not logged in for this profile" \
+				"cd into the folder and run: claude  → /login → /exit (never Ctrl+C)"
+		fi
+
+		if [[ -f "$cred" ]]; then
+			local mode
+			mode="$(sc_file_mode "$cred")"
+			if [[ "$mode" == 600 ]]; then
+				_dr_ok "HTTPS credentials are 600"
+			else
+				_dr_warn "HTTPS credentials are mode $mode" "chmod 600 $cred"
+			fi
+		fi
+
+		while IFS= read -r d; do
+			[[ -n "$d" ]] || continue
+			if [[ ! -d "$d" ]]; then
+				_dr_warn "$d does not exist yet" "switchcraft apply"
+				continue
+			fi
+			local real
+			real="$(cd "$d" && pwd -P)"
+			if [[ "$real" != "$d" ]]; then
+				_dr_bad "$d resolves to $real" "git ignores the symlinked path: switchcraft link $p $real"
+			elif [[ -f "$d/.envrc" ]] && grep -qF "$SC_BEGIN" "$d/.envrc" 2>/dev/null; then
+				_dr_ok "$d is wired up"
+			else
+				_dr_bad "$d has no switchcraft .envrc" "switchcraft apply"
+			fi
+		done < <(sc_cfg_get_all "$p" dir)
+	done < <(sc_cfg_profiles)
+
+	printf '\n'
+	if ((SC_DR_FAIL == 0)); then
+		ok "everything checks out"
+		return 0
+	fi
+	bad "$SC_DR_FAIL problem(s) found"
+	return 1
+}
+
+# ------------------------------------------------------------------
+# uninstall
+# ------------------------------------------------------------------
+
+cmd_uninstall() {
+	local purge=0
+	while (($#)); do
+		case "$1" in
+		--purge)
+			purge=1
+			shift
+			;;
+		*) die "uninstall: unknown option $1" ;;
+		esac
+	done
+	sc_cfg_exists || die "nothing to uninstall — no config at $(sc_cfg_path)"
+
+	confirm "remove every change switchcraft made to this machine?" || {
+		info "aborted"
+		return 0
+	}
+
+	local p d rc
+	while IFS= read -r p; do
+		[[ -n "$p" ]] || continue
+		while IFS= read -r d; do
+			[[ -n "$d" ]] || continue
+			[[ -f "$d/.envrc" ]] && sc_block_remove "$d/.envrc" 1
+		done < <(sc_cfg_get_all "$p" dir)
+		[[ -f "$(sc_git_profile_file "$p")" ]] && sc_run rm -f "$(sc_git_profile_file "$p")"
+	done < <(sc_cfg_profiles)
+
+	sc_block_remove "$(sc_git_global_config)"
+	rc="$(sc_shell_rc)"
+	[[ -n "$rc" ]] && sc_block_remove "$rc"
+	[[ -f "$(sc_git_signers_file)" ]] && sc_run rm -f "$(sc_git_signers_file)"
+	sc_git_disable_signing
+	ok "global git signing settings cleared"
+
+	if ((purge)); then
+		while IFS= read -r p; do
+			[[ -n "$p" ]] || continue
+			sc_run rm -rf "$(sc_profile_claude_dir "$p")" "$(sc_profile_gh_dir "$p")"
+			sc_run rm -f "$(sc_profile_key "$p")" "$(sc_profile_key "$p").pub" "$(sc_git_cred_file "$p")"
+		done < <(sc_cfg_profiles)
+		sc_run rm -f "$(sc_cfg_path)"
+		warn "delete the SSH keys from your GitHub accounts as well"
+		ok "purged"
+	else
+		info "kept, because they hold data you may still want:"
+		note "config:  $(sc_cfg_path)"
+		note "keys:    ~/.ssh/id_ed25519_*"
+		note "claude:  ~/.claude-*  (conversation history)"
+		note "add --purge to delete those too"
+	fi
+	local bak
+	for bak in "$HOME"/.gitconfig.switchcraft.bak "$HOME"/.bashrc.switchcraft.bak \
+		"$HOME"/.zshrc.switchcraft.bak; do
+		[[ -f "$bak" ]] && note "pre-switchcraft backup still here: $bak"
+	done
+	note "your project files were never touched"
+}
+
+# ------------------------------------------------------------------
+# Dispatch
+# ------------------------------------------------------------------
+
+main() {
+	local cmd=''
+	while (($#)); do
+		case "$1" in
+		-n | --dry-run)
+			# shellcheck disable=SC2034 # read by lib/common.sh
+			SC_DRY_RUN=1
+			shift
+			;;
+		-y | --yes)
+			# shellcheck disable=SC2034 # read by lib/common.sh
+			SC_YES=1
+			shift
+			;;
+		-h | --help)
+			usage
+			return 0
+			;;
+		-V | --version)
+			printf 'switchcraft %s\n' "$SC_VERSION"
+			return 0
+			;;
+		--)
+			shift
+			break
+			;;
+		-*) die "unknown option '$1' — try: switchcraft --help" ;;
+		*)
+			cmd="$1"
+			shift
+			break
+			;;
+		esac
+	done
+
+	is_dry && info "dry run — nothing will be written"
+
+	case "$cmd" in
+	init) cmd_init "$@" ;;
+	add) cmd_add "$@" ;;
+	remove | rm) cmd_remove "$@" ;;
+	link) cmd_link "$@" ;;
+	unlink) cmd_unlink "$@" ;;
+	list | ls) cmd_list "$@" ;;
+	status | st) cmd_status "$@" ;;
+	apply) cmd_apply "$@" ;;
+	doctor) cmd_doctor "$@" ;;
+	uninstall) cmd_uninstall "$@" ;;
+	'' | help) usage ;;
+	*) die "unknown command '$cmd' — try: switchcraft --help" ;;
+	esac
+}
+
+main "$@"
