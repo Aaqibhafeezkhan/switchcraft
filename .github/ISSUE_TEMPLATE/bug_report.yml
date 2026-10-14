@@ -1,0 +1,42 @@
+name: Bug report
+description: Something switchcraft did wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `switchcraft doctor`
+      description: Redact emails and usernames if you like — keep the ✓/✗ lines.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Ideally from a throwaway HOME, e.g. `HOME=$(mktemp -d) ./bin/switchcraft init`
+      render: shell
+
+  - type: input
+    id: env
+    attributes:
+      label: OS, shell and versions
+      placeholder: "Arch Linux, fish 3.7, git 2.47, bash 5.2, direnv 2.34"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have not pasted any token, private key or credential into this issue
+          required: true
