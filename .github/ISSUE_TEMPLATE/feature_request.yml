@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest something switchcraft should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What goes wrong today, in concrete terms.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like it to do
+      description: A command line you wish worked is the most useful form.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do instead today
