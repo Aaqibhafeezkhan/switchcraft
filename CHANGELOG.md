@@ -55,6 +55,10 @@ no longer depends on where it was cloned.
 - `XDG_CONFIG_HOME` is respected, and `~/.config/git/config` is used as the
   global config when that is what git would read.
 - Credential files moved out of the working tree into `~/.config/switchcraft/`.
+- The test suite sandboxes `SC_ROOT` as well as `$HOME`. A developer's own v1
+  `.env` in the clone was otherwise migrated by `init` during the tests, which
+  pointed `projects_root` at their real directories — and `apply` then wrote
+  `.envrc` files outside the sandbox.
 - A directory reached through a symlink now gets its profile. git resolves
   symlinks before matching `includeIf`, so the generated rules and every lookup
   use the canonical path. On macOS this was the common case rather than an edge

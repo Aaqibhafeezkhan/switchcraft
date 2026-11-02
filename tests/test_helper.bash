@@ -17,6 +17,15 @@ setup() {
 	export PATH="$BATS_TEST_DIRNAME/stubs:$PATH"
 	unset GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR CLAUDE_CONFIG_DIR SWITCHCRAFT_CONFIG
 
+	# SC_ROOT is sandboxed too, not just $HOME. A developer's own v1 .env sitting
+	# in the clone would otherwise be migrated by `init`, pointing projects_root
+	# at their real directories — and `apply` would then write .envrc files
+	# outside the sandbox, into folders the suite does not own.
+	mkdir -p "$SANDBOX/repo"
+	ln -s "$SC_REPO/lib" "$SANDBOX/repo/lib"
+	ln -s "$SC_REPO/templates" "$SANDBOX/repo/templates"
+	export SWITCHCRAFT_ROOT="$SANDBOX/repo"
+
 	mkdir -p "$SANDBOX/projects"
 	: >"$SANDBOX/.bashrc"
 	SC="$SC_REPO/bin/switchcraft"
