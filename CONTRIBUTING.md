@@ -45,6 +45,7 @@ lib/git.sh          git profiles, includeIf block, signing, HTTPS credentials
 lib/ssh.sh          one ed25519 key per profile
 lib/direnv.sh       per-shell hook, and the .envrc in each directory
 lib/gh.sh           one gh config dir per profile
+lib/terraform.sh    per-profile Terraform CLI config and credentials
 templates/          the rendered git profile
 ```
 
@@ -87,5 +88,6 @@ vhs docs/demo.tape    # writes docs/demo.gif
 ## Scope
 
 switchcraft switches identity by directory. In scope: more forges (GitLab,
-Codeberg), more shells, more agent CLIs, better diagnostics. Out of scope:
-managing the contents of your repos, or anything that needs a daemon.
+Codeberg), more shells, more agent CLIs, more credential-scoped CLIs (Terraform
+and OpenTofu are in), better diagnostics. Out of scope: managing the contents of
+your repos, or anything that needs a daemon.

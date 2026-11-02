@@ -6,3 +6,6 @@ id_ed25519*.pub
 .credentials.json
 .claude*/
 .env
+
+# Generated Terraform CLI configs hold resolved tokens
+*.tfrc

@@ -159,3 +159,99 @@ load test_helper
 	! gitconfig | grep -qF "gitdir:$resolved/"
 	gitconfig | grep -q 'git-profiles/work'
 }
+
+@test "apply is idempotent with the terraform layer" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	cp "$(tfrc work)" "$SANDBOX/tfrc.first"
+	cp "$SANDBOX/projects/work/.envrc" "$SANDBOX/envrc.first"
+	sc apply >/dev/null 2>&1
+	sc apply >/dev/null 2>&1
+	diff -q "$SANDBOX/tfrc.first" "$(tfrc work)"
+	diff -q "$SANDBOX/envrc.first" "$SANDBOX/projects/work/.envrc"
+}
+
+@test "remove deletes the generated tfrc but keeps the key" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	[ -f "$(tfrc work)" ]
+	run sc remove work
+	[ "$status" -eq 0 ]
+	# regenerable from tf_token_cmd and it holds a live token, so it goes
+	# without waiting for --purge — unlike the key
+	[ ! -e "$(tfrc work)" ]
+	[ -f "$SANDBOX/.ssh/id_ed25519_work" ]
+}
+
+@test "uninstall deletes the generated tfrc" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	run sc uninstall
+	[ "$status" -eq 0 ]
+	[ ! -e "$(tfrc work)" ]
+	[ -f "$SANDBOX/.ssh/id_ed25519_work" ]
+}
+
+@test "doctor names what is wrong with the terraform layer" {
+	# doctor exits non-zero in the sandbox regardless (no gh login, no key on
+	# GitHub), so these assert on the output, never on the status.
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+
+	run sc doctor
+	[[ "$output" == *"terraform config is 600"* ]]
+	[[ "$output" == *"token present for app.terraform.io"* ]]
+
+	# a machine-global login can disagree with the profile, because
+	# $HOME/.terraform.d is relocatable by no environment variable
+	mkdir -p "$SANDBOX/.terraform.d"
+	echo '{}' >"$SANDBOX/.terraform.d/credentials.tfrc.json"
+	printf 'plugin_cache_dir = "/x"\n' >"$SANDBOX/.terraformrc"
+	run sc doctor
+	[[ "$output" == *"machine-global terraform login"* ]]
+	[[ "$output" == *".terraformrc is ignored inside managed directories"* ]]
+
+	rm -f "$(tfrc work)"
+	run sc doctor
+	[[ "$output" == *"terraform config missing"* ]]
+}
+
+@test "doctor warns about a TF_TOKEN_ in the environment without printing it" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	TF_TOKEN_app_terraform_io=leakme run sc doctor
+	[[ "$output" == *"TF_TOKEN_* is set in your environment"* ]]
+	[[ "$output" == *"TF_TOKEN_app_terraform_io in your environment overrides"* ]]
+	[[ "$output" != *"leakme"* ]]
+}
+
+@test "doctor stops nagging about an rc once tf_rc_extra carries it" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	printf 'plugin_cache_dir = "/x"\n' >"$SANDBOX/.terraformrc"
+	run sc doctor
+	[[ "$output" == *".terraformrc is ignored inside managed directories"* ]]
+
+	load_libs
+	sc_cfg_append work tf_rc_extra "$SANDBOX/.terraformrc"
+	run sc doctor
+	[[ "$output" != *"is ignored inside managed directories"* ]]
+}
+
+@test "a profile without Terraform gets no Terraform diagnostics" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	add_profile work work@company.com
+	# the whole section is gated, so someone who does not use the layer is not
+	# told about TF_TOKEN_ or a global login they do not care about
+	mkdir -p "$SANDBOX/.terraform.d"
+	echo '{}' >"$SANDBOX/.terraform.d/credentials.tfrc.json"
+	TF_TOKEN_app_terraform_io=leakme run sc doctor
+	[[ "$output" != *"TF_TOKEN"* ]]
+	[[ "$output" != *"terraform login"* ]]
+}

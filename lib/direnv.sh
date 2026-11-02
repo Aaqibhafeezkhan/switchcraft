@@ -88,6 +88,15 @@ sc_envrc_body() {
 	local p="$1"
 	printf 'export CLAUDE_CONFIG_DIR=%s\n' "$(sc_profile_claude_dir "$p")"
 	printf 'export GH_CONFIG_DIR=%s\n' "$(sc_profile_gh_dir "$p")"
+	# Only for profiles that configure Terraform. This export makes Terraform
+	# ignore the user's own ~/.terraformrc, so an unconditional one would switch
+	# off everybody's, silently, inside every managed directory.
+	if sc_tf_enabled "$p"; then
+		printf 'export TF_CLI_CONFIG_FILE=%s\n' "$(sc_tf_rc_file "$p")"
+	fi
+	# Explicit, because this runs as the left side of a pipeline under pipefail:
+	# a falsy last statement would abort the whole apply.
+	return 0
 }
 
 # sc_envrc_apply <profile> <dir> — fenced, so a user's own .envrc survives.

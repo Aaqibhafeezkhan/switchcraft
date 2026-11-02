@@ -6,7 +6,8 @@
 [![platform: linux | macos](https://img.shields.io/badge/platform-linux%20%7C%20macos-lightgrey.svg)](#requirements)
 
 **The folder decides who you are.** Your GitHub identity, SSH key, commit
-signature, `gh` account and Claude Code login all switch when you `cd`.
+signature, `gh` account, Claude Code login and HCP Terraform account all switch
+when you `cd`.
 
 *switch* + witch*craft* — the magic of switching accounts without doing a thing.
 
@@ -52,7 +53,7 @@ The usual answers each cover one layer. `includeIf` handles name and email.
 maintaining four mechanisms that can disagree with each other, and nothing tells
 you when one of them is wrong.
 
-switchcraft wires all five layers to the same switch — the directory you are in —
+switchcraft wires all six layers to the same switch — the directory you are in —
 and ships a `doctor` that tells you which layer is broken when something is off.
 
 ## Quick start
@@ -102,7 +103,7 @@ It names every missing piece and the exact command to fix it.
 | `switchcraft unlink <dir>` | stop managing a directory, leaving its files alone |
 | `switchcraft list` | every profile and where it applies |
 | `switchcraft status [dir]` | which identity applies here, and whether it is live |
-| `switchcraft doctor` | check all five layers and say what is missing |
+| `switchcraft doctor` | check all six layers and say what is missing |
 | `switchcraft apply` | reconcile everything from the config (idempotent) |
 | `switchcraft remove <profile>` | drop an identity (`--purge` also deletes its key and history) |
 | `switchcraft uninstall` | reverse every change on this machine |
@@ -119,6 +120,7 @@ Add `--dry-run` to any command to see what it would write without writing it.
 | HTTPS credentials | `credential.helper = store --file=…` per profile |
 | GitHub CLI account | `GH_CONFIG_DIR` exported by `.envrc` (direnv) |
 | Claude Code account | `CLAUDE_CONFIG_DIR` exported by `.envrc` (direnv) |
+| HCP Terraform account | `TF_CLI_CONFIG_FILE` exported by `.envrc` → a per-profile `*.tfrc` (mode 600) |
 
 Commits are signed with the same SSH key that authenticates the account, so
 there is no GPG to manage.
@@ -141,6 +143,41 @@ switchcraft add work --name 'Your Name' --email you@company.com \
 
 Any clone of that org gets the work identity, from any path on disk.
 
+### One HCP Terraform account per directory
+
+`terraform login` writes `~/.terraform.d/credentials.tfrc.json`, and **no
+environment variable can move that directory** — so a Terraform Cloud or
+Terraform Enterprise login is one account per machine, globally. Point a profile
+at a token instead and the account follows the folder:
+
+```bash
+switchcraft add work --name 'Your Name' --email you@company.com \
+  --tf-token-cmd 'pass show tfe/work'
+```
+
+```console
+$ cd ~/projects/work && switchcraft status
+
+  profile     work
+  terraform   /home/you/.config/switchcraft/terraform-work.tfrc  ✓
+```
+
+The `.envrc` exports only the *path*; the token lives in that file at mode 600,
+outside any working tree. There is no `terraform login` step. OpenTofu honours
+the same variable, so `tofu` switches too.
+
+This layer is opt-in: without a `tf_` key, nothing is written and nothing is
+exported, so your own `~/.terraformrc` keeps working untouched.
+
+Extra keys, all optional, in `~/.config/switchcraft/config`:
+
+| Key | What for |
+| --- | --- |
+| `tf_token_cmd` | command that prints the token (never the token itself) |
+| `tf_host` | repeatable; defaults to `app.terraform.io`. Every host of a profile shares its token |
+| `tf_rc` | where switchcraft writes the generated file |
+| `tf_rc_extra` | a file appended verbatim — use it to carry your own `plugin_cache_dir` into managed directories |
+
 ## Why not just…
 
 | Instead of switchcraft | What that gives you | What it leaves out |
@@ -151,8 +188,9 @@ Any clone of that org gets the work identity, from any path on disk.
 | `gh auth switch` | the `gh` account | it is global, not per directory, and says nothing about git, ssh or Claude |
 | `~/.ssh/config` host aliases | a key per account | every remote URL has to be rewritten; identity, `gh` and Claude are untouched |
 | [gitswitch](https://github.com/UzairRehman4/gitswitch), [gh-account-switcher](https://github.com/calghar/gh-account-switcher) | git identity and SSH per folder | no Claude Code, no per-directory `gh`, no `doctor`, no reversible uninstall |
+| `terraform login` | one Terraform Cloud account | `~/.terraform.d` cannot be relocated, so it is one account per *machine* |
 
-switchcraft is those five layers on one switch, reversible, with a `doctor` that
+switchcraft is those six layers on one switch, reversible, with a `doctor` that
 tells you which layer is broken.
 
 ## Requirements
@@ -162,6 +200,8 @@ tells you which layer is broken.
 - **git 2.36+** only for `--remote` matching; directory matching works on any version
 - optional: **[gh](https://cli.github.com)** for per-directory GitHub CLI accounts
 - optional: **[Claude Code](https://claude.com/claude-code)** for per-directory logins
+- optional: **[Terraform](https://developer.hashicorp.com/terraform)** or
+  **[OpenTofu](https://opentofu.org)** for per-directory HCP Terraform accounts
 
 Shells: bash, zsh, fish, tcsh and elvish get their hook written automatically.
 Anything else (nushell, for example) prints the line to add yourself.
@@ -191,6 +231,17 @@ bugs in switchcraft.
 - **Clone via SSH** (`git@github.com:…`) to use the per-account keys. HTTPS
   remotes work too, through the per-profile credential file, but then the key
   and the signature are not involved.
+- **Your own `~/.terraformrc` is shadowed inside a managed directory, not
+  merged.** Terraform reads exactly one CLI config file, and
+  `TF_CLI_CONFIG_FILE` decides which. Carry your settings over with
+  `tf_rc_extra = ~/.terraformrc`; `doctor` tells you when you have an rc that is
+  being ignored.
+- **`terraform login` stays global.** It writes
+  `~/.terraform.d/credentials.tfrc.json` and no variable relocates that
+  directory, which is the whole reason this layer exists. Use `tf_token_cmd`,
+  and `terraform logout` once to clear the old machine-wide login.
+- **`TF_TOKEN_<host>` in your environment beats everything**, including the
+  per-directory account. `doctor` warns when it sees one.
 
 ## Security
 
@@ -207,7 +258,10 @@ bugs in switchcraft.
   switchcraft add work --token-cmd 'pass show github/work'
   ```
   The resolved token lands in `~/.config/switchcraft/credentials-<profile>`
-  (mode 600), outside your working tree.
+  (mode 600), outside your working tree. `--tf-token-cmd` works the same way for
+  Terraform, writing `~/.config/switchcraft/terraform-<profile>.tfrc`. It is a
+  separate key on purpose: a GitHub PAT has no business being sent to
+  `app.terraform.io`.
 - Found something sensitive? See [SECURITY.md](SECURITY.md).
 
 ## Troubleshooting
@@ -222,6 +276,7 @@ Run `switchcraft doctor` first — it covers most of this. Then:
 | commits show "No signature" locally | the allowed-signers file is missing | `switchcraft apply` (GitHub verifies regardless — this is cosmetic) |
 | key rejected by GitHub | the public key is not registered, or only as an auth key | add the `.pub` twice: Authentication **and** Signing |
 | Claude Code asks to log in again | the previous session was killed with Ctrl+C | log in again and leave with `/exit` |
+| terraform hits the wrong org, or 401 | a `TF_TOKEN_*` in your environment, or a leftover machine-wide `terraform login` | `switchcraft doctor` names which one; then `unset` it or `terraform logout` |
 
 ## Uninstall
 

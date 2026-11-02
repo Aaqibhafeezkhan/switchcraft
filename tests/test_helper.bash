@@ -16,6 +16,16 @@ setup() {
 	export SC_OFFLINE=1 NO_COLOR=1 SC_YES=1
 	export PATH="$BATS_TEST_DIRNAME/stubs:$PATH"
 	unset GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR CLAUDE_CONFIG_DIR SWITCHCRAFT_CONFIG
+	unset TF_CLI_CONFIG_FILE TERRAFORM_CONFIG
+
+	# SC_ROOT is sandboxed too, not just $HOME. A developer's own v1 .env sitting
+	# in the clone would otherwise be migrated by `init`, pointing projects_root
+	# at their real directories — and `apply` would then write .envrc files
+	# outside the sandbox, into folders the suite does not own.
+	mkdir -p "$SANDBOX/repo"
+	ln -s "$SC_REPO/lib" "$SANDBOX/repo/lib"
+	ln -s "$SC_REPO/templates" "$SANDBOX/repo/templates"
+	export SWITCHCRAFT_ROOT="$SANDBOX/repo"
 
 	mkdir -p "$SANDBOX/projects"
 	: >"$SANDBOX/.bashrc"
@@ -39,7 +49,7 @@ add_profile() {
 load_libs() {
 	export SC_ROOT="$SC_REPO" SC_LIB="$SC_REPO/lib" SC_TEMPLATES="$SC_REPO/templates"
 	# shellcheck source=/dev/null
-	for m in common config git ssh direnv gh; do source "$SC_REPO/lib/$m.sh"; done
+	for m in common config git ssh direnv gh terraform; do source "$SC_REPO/lib/$m.sh"; done
 }
 
 gitconfig() { cat "$SANDBOX/.gitconfig"; }
@@ -48,3 +58,15 @@ gitconfig() { cat "$SANDBOX/.gitconfig"; }
 file_mode() {
 	stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
+
+# tf_token_script <token> — prints the path of a command that prints <token>.
+# Tests never pass a token inline: --tf-token-cmd 'echo <token>' would put the
+# secret in the config, which is exactly what the config must never hold.
+tf_token_script() {
+	printf '#!/bin/sh\necho %s\n' "$1" >"$SANDBOX/tokprint"
+	chmod +x "$SANDBOX/tokprint"
+	printf '%s\n' "$SANDBOX/tokprint"
+}
+
+# tfrc <profile> — the generated Terraform CLI config for that profile
+tfrc() { printf '%s\n' "$SANDBOX/.config/switchcraft/terraform-$1.tfrc"; }

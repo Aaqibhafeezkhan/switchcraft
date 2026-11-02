@@ -27,9 +27,16 @@ no longer depends on where it was cloned.
 - `uninstall.sh` / `switchcraft uninstall`, which reverses every change.
 - SSH commit signing is configured automatically, including the
   `allowedSignersFile` that makes local verification work.
+- One **HCP Terraform / OpenTofu account per directory**, through
+  `TF_CLI_CONFIG_FILE` and a per-profile `*.tfrc` (mode 600) holding a
+  `credentials` block resolved from `--tf-token-cmd`. `terraform login` writes
+  `~/.terraform.d/credentials.tfrc.json` and no environment variable relocates
+  that directory, so without this a Terraform Cloud login is one account per
+  machine. The layer is opt-in per profile: with no `tf_` key nothing is written
+  and nothing is exported, so an existing `~/.terraformrc` is untouched.
 - Tokens are read from a command (`--token-cmd 'pass show github/work'`) instead
   of being stored in a config file.
-- 41 bats tests running against a throwaway `$HOME`, plus CI on Linux and macOS
+- 68 bats tests running against a throwaway `$HOME`, plus CI on Linux and macOS
   with shellcheck and shfmt.
 - `LICENSE` (MIT), `CONTRIBUTING.md`, `SECURITY.md`.
 
@@ -55,6 +62,10 @@ no longer depends on where it was cloned.
 - `XDG_CONFIG_HOME` is respected, and `~/.config/git/config` is used as the
   global config when that is what git would read.
 - Credential files moved out of the working tree into `~/.config/switchcraft/`.
+- The test suite sandboxes `SC_ROOT` as well as `$HOME`. A developer's own v1
+  `.env` in the clone was otherwise migrated by `init` during the tests, which
+  pointed `projects_root` at their real directories — and `apply` then wrote
+  `.envrc` files outside the sandbox.
 - A directory reached through a symlink now gets its profile. git resolves
   symlinks before matching `includeIf`, so the generated rules and every lookup
   use the canonical path. On macOS this was the common case rather than an edge
