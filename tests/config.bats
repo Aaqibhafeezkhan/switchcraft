@@ -15,6 +15,9 @@ email = ada@company.com
 dir   = /home/me/projects/work
 dir   = /mnt/other/client
 remote = git@github.com:company/*
+tf_token_cmd = printf tok-work
+tf_host = app.terraform.io
+tf_host = my-tfe.corp.com
 
 [profile personal]
 name  = Ada
@@ -106,4 +109,62 @@ EOF
 	run sc_cfg_get p name
 	[ ! -e "$SANDBOX/pwned" ]
 	[ ! -e "$SANDBOX/pwned2" ]
+}
+
+@test "tf_host defaults to app.terraform.io and is repeatable" {
+	setup_config
+	run sc_tf_hosts work
+	[ "${#lines[@]}" -eq 2 ]
+	[ "${lines[0]}" = "app.terraform.io" ]
+	[ "${lines[1]}" = "my-tfe.corp.com" ]
+	run sc_tf_hosts personal
+	[ "$output" = "app.terraform.io" ]
+}
+
+@test "the Terraform layer is enabled by its data, not a flag" {
+	setup_config
+	sc_tf_enabled work
+	! sc_tf_enabled personal
+	sc_tf_any_enabled
+}
+
+@test "tf_rc overrides the generated path" {
+	setup_config
+	[ "$(sc_tf_rc_file personal)" = "$SANDBOX/.config/switchcraft/terraform-personal.tfrc" ]
+	sc_cfg_append personal tf_rc /somewhere/else.tfrc
+	[ "$(sc_tf_rc_file personal)" = "/somewhere/else.tfrc" ]
+}
+
+@test "TF_TOKEN_ names follow Terraform's own encoding" {
+	load_libs
+	[ "$(sc_tf_env_name app.terraform.io)" = "TF_TOKEN_app_terraform_io" ]
+	# hyphens double, so a host containing both can still be decoded
+	[ "$(sc_tf_env_name my-tfe.corp.com)" = "TF_TOKEN_my__tfe_corp_com" ]
+	[ "$(sc_tf_env_name APP.Terraform.IO)" = "TF_TOKEN_app_terraform_io" ]
+}
+
+@test "a non-ASCII host is refused rather than encoded wrong" {
+	load_libs
+	# Terraform punycodes these and bash cannot, so they must not pass. Under
+	# en_US.UTF-8 the range a-z collates accented letters, which is why the
+	# validator pins LC_ALL=C.
+	! sc_tf_host_ok 'café.fr'
+	! sc_tf_host_ok 'not a host'
+	! sc_tf_host_ok '-bad.com'
+	sc_tf_host_ok 'app.terraform.io'
+	sc_tf_host_ok 'my-tfe.corp.com'
+}
+
+@test "a value that is not a token is refused rather than escaped" {
+	load_libs
+	sc_tf_token_ok 'ATxxxx.atlasv1.yy-_=~+/'
+	! sc_tf_token_ok 'tok"quote'
+	! sc_tf_token_ok 'tok$(touch /tmp/sc-pwned)'
+	! sc_tf_token_ok ''
+	[ ! -e /tmp/sc-pwned ]
+}
+
+@test "the HCL escape neutralises quotes and backslashes" {
+	load_libs
+	[ "$(sc_tf_escape 'a"b\c')" = 'a\"b\\c' ]
 }

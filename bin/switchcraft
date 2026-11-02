@@ -29,7 +29,7 @@ SC_LIB="$SC_ROOT/lib"
 SC_TEMPLATES="$SC_ROOT/templates"
 export SC_ROOT SC_LIB SC_TEMPLATES
 
-for _sc_mod in common config git ssh direnv gh; do
+for _sc_mod in common config git ssh direnv gh terraform; do
 	# shellcheck source=/dev/null
 	source "$SC_LIB/$_sc_mod.sh"
 done
@@ -76,6 +76,8 @@ ${SC_BOLD}OPTIONS for add${SC_OFF}
   --dir <path>              directory to bind (repeatable)
   --remote <glob>           match by remote URL instead (repeatable, git>=2.36)
   --token-cmd <cmd>         command that prints a PAT (e.g. "pass show gh/work")
+  --tf-token-cmd <cmd>      command that prints an HCP Terraform token
+  --tf-host <host>          Terraform host (repeatable, default app.terraform.io)
   --no-dir                  create the profile without binding a directory
 
 Config: $(sc_cfg_path)
@@ -177,7 +179,8 @@ sc_migrate_legacy_env() {
 
 cmd_add() {
 	local profile='' name='' email='' ghuser='' token_cmd='' no_dir=0
-	local -a dirs=() remotes=()
+	local tf_token_cmd=''
+	local -a dirs=() remotes=() tf_hosts=()
 
 	while (($#)); do
 		case "$1" in
@@ -203,6 +206,14 @@ cmd_add() {
 			;;
 		--token-cmd)
 			token_cmd="$2"
+			shift 2
+			;;
+		--tf-token-cmd)
+			tf_token_cmd="$2"
+			shift 2
+			;;
+		--tf-host)
+			tf_hosts+=("$2")
 			shift 2
 			;;
 		--no-dir)
@@ -251,9 +262,14 @@ cmd_add() {
 	sc_cfg_append "$profile" email "$email"
 	[[ -n "$ghuser" ]] && sc_cfg_append "$profile" github_user "$ghuser"
 	[[ -n "$token_cmd" ]] && sc_cfg_append "$profile" token_cmd "$token_cmd"
-	local d r
+	[[ -n "$tf_token_cmd" ]] && sc_cfg_append "$profile" tf_token_cmd "$tf_token_cmd"
+	local d r h
 	for d in "${dirs[@]+"${dirs[@]}"}"; do sc_cfg_append "$profile" dir "$d"; done
 	for r in "${remotes[@]+"${remotes[@]}"}"; do sc_cfg_append "$profile" remote "$r"; done
+	for h in "${tf_hosts[@]+"${tf_hosts[@]}"}"; do
+		sc_tf_host_ok "$h" || die "add: '$h' is not a hostname"
+		sc_cfg_append "$profile" tf_host "$h"
+	done
 	ok "profile '$profile' added"
 
 	if is_dry; then
@@ -291,6 +307,15 @@ cmd_remove() {
 	local pf
 	pf="$(sc_git_profile_file "$profile")"
 	[[ -f "$pf" ]] && sc_run rm -f "$pf"
+
+	# Regenerable from tf_token_cmd and it holds a live bearer token, so it goes
+	# on a plain remove rather than waiting for --purge. Only if we wrote it:
+	# tf_rc can point at a file the user owns.
+	local tfrc
+	tfrc="$(sc_tf_rc_file "$profile")"
+	if sc_tf_rc_is_ours "$tfrc"; then
+		sc_run rm -f "$tfrc"
+	fi
 
 	if ((purge)); then
 		local cdir gdir key
@@ -366,7 +391,7 @@ cmd_unlink() {
 
 cmd_list() {
 	sc_cfg_require
-	local p d r profiles
+	local p d r h profiles
 	profiles="$(sc_cfg_profiles)"
 	[[ -n "$profiles" ]] || {
 		warn "no profiles yet — run: switchcraft add <name>"
@@ -383,6 +408,20 @@ cmd_list() {
 		[[ -f "$(sc_profile_key "$p")" ]] && printf ' %s(present)%s\n' "$SC_DIM" "$SC_OFF" || printf ' %s(missing)%s\n' "$SC_YELLOW" "$SC_OFF"
 		printf '  %-12s %s\n' 'claude' "$(sc_profile_claude_dir "$p")"
 		printf '  %-12s %s\n' 'gh' "$(sc_profile_gh_dir "$p")"
+		if sc_tf_enabled "$p"; then
+			local tfrc
+			tfrc="$(sc_tf_rc_file "$p")"
+			printf '  %-12s %s' 'terraform' "$tfrc"
+			if [[ -f "$tfrc" ]]; then
+				printf ' %s(present)%s\n' "$SC_DIM" "$SC_OFF"
+			else
+				printf ' %s(missing)%s\n' "$SC_YELLOW" "$SC_OFF"
+			fi
+			while IFS= read -r h; do
+				[[ -n "$h" ]] || continue
+				printf '  %-12s %s\n' 'tf host' "$h"
+			done < <(sc_tf_hosts "$p")
+		fi
 		while IFS= read -r d; do
 			[[ -n "$d" ]] || continue
 			printf '  %-12s %s\n' 'dir' "$d"
@@ -421,6 +460,7 @@ _sc_mark() {
 cmd_status() {
 	sc_cfg_require
 	local dir="${1:-$PWD}" profile cdir gdir active_c=0 active_g=0
+	local tfrc='' active_t=0 has_tf=0
 	dir="$(sc_abs "$dir")"
 	profile="$(sc_cfg_profile_for_dir "$dir")"
 
@@ -439,12 +479,20 @@ cmd_status() {
 	gdir="$(sc_profile_gh_dir "$profile")"
 	[[ "${CLAUDE_CONFIG_DIR:-}" == "$cdir" ]] && active_c=1
 	[[ "${GH_CONFIG_DIR:-}" == "$gdir" ]] && active_g=1
+	if sc_tf_enabled "$profile"; then
+		has_tf=1
+		tfrc="$(sc_tf_rc_file "$profile")"
+		[[ "${TF_CLI_CONFIG_FILE:-}" == "$tfrc" ]] && active_t=1
+	fi
 
 	printf '  %-11s %s%s%s\n' 'profile' "$SC_BOLD" "$profile" "$SC_OFF"
 	printf '  %-11s %s <%s>\n' 'git' "$(sc_cfg_get "$profile" name)" "$(sc_cfg_get "$profile" email)"
 	printf '  %-11s %s\n' 'ssh key' "$(sc_profile_key "$profile")"
 	printf '  %-11s %s %s\n' 'claude' "$cdir" "$(_sc_mark "$active_c")"
 	printf '  %-11s %s %s\n' 'gh' "$gdir" "$(_sc_mark "$active_g")"
+	if ((has_tf)); then
+		printf '  %-11s %s %s\n' 'terraform' "$tfrc" "$(_sc_mark "$active_t")"
+	fi
 
 	# The effective identity is what git will actually stamp on a commit.
 	if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
@@ -462,8 +510,12 @@ cmd_status() {
 	fi
 
 	printf '\n'
-	if ((active_c == 0 || active_g == 0)); then
-		note "Claude/gh not active in this shell — open a new terminal or: direnv allow $dir"
+	if ((active_c == 0 || active_g == 0 || (has_tf == 1 && active_t == 0))); then
+		# Name only the layers this profile actually has, so the hint never
+		# mentions Terraform to someone who does not use it.
+		local layers='Claude/gh'
+		((has_tf)) && layers='Claude/gh/terraform'
+		note "$layers not active in this shell — open a new terminal or: direnv allow $dir"
 	fi
 }
 
@@ -497,6 +549,14 @@ cmd_apply() {
 		sc_git_write_profile "$p"
 		ok "git profile → $(sc_git_profile_file "$p")"
 		sc_mkdir "$cdir" "$gdir"
+
+		# Before the .envrc, so TF_CLI_CONFIG_FILE is never exported pointing
+		# at a file that does not exist — or at one we refuse to own.
+		if sc_tf_enabled "$p"; then
+			sc_tf_write_rc "$p" ||
+				die "profile $p: $(sc_tf_rc_file "$p") was not written by switchcraft — point tf_rc elsewhere"
+			ok "terraform config → $(sc_tf_rc_file "$p")"
+		fi
 
 		while IFS= read -r d; do
 			[[ -n "$d" ]] || continue
@@ -562,7 +622,7 @@ _dr_warn() {
 
 cmd_doctor() {
 	sc_cfg_require
-	local p d rc kind gc
+	local p d rc kind gc tfenv urc
 
 	printf '\n%senvironment%s\n' "$SC_BOLD" "$SC_OFF"
 	if has_cmd direnv; then
@@ -593,6 +653,33 @@ cmd_doctor() {
 		_dr_warn "GH_TOKEN/GITHUB_TOKEN is set in your environment" \
 			"it overrides the per-directory gh account — unset it for normal work"
 	fi
+	# All of this is noise for someone who does not use the layer, so it is
+	# gated the way the layer itself is.
+	if sc_tf_any_enabled; then
+		# The direct analogue of the GH_TOKEN warning: a TF_TOKEN_* outranks
+		# every credentials block, so it silently wins over the whole layer.
+		tfenv="$(sc_tf_env_tokens | tr '\n' ' ')"
+		if [[ -n "$tfenv" ]]; then
+			_dr_warn "TF_TOKEN_* is set in your environment: ${tfenv% }" \
+				"it outranks every credentials block — unset it for normal work"
+		fi
+		while IFS= read -r urc; do
+			[[ -f "$urc" ]] || continue
+			# Already carried over with tf_rc_extra: nothing to say.
+			sc_tf_rc_extra_covers "$urc" && continue
+			# Any content, not just non-credential content: telling the two
+			# apart means parsing HCL, and a shadowed credentials block is
+			# just as surprising as a shadowed plugin_cache_dir.
+			if grep -q '^[[:space:]]*[^#[:space:]]' "$urc" 2>/dev/null; then
+				_dr_warn "$urc is ignored inside managed directories" \
+					"Terraform reads one CLI config file; add: tf_rc_extra = $urc"
+			fi
+		done < <(sc_tf_user_rc_files)
+		if [[ -f "$(sc_tf_global_creds)" ]]; then
+			_dr_warn "a machine-global terraform login exists: $(sc_tf_global_creds)" \
+				"\$HOME/.terraform.d cannot be relocated, so it can disagree with a profile — prefer tf_token_cmd, then: terraform logout"
+		fi
+	fi
 
 	printf '\n%sglobal git config%s\n' "$SC_BOLD" "$SC_OFF"
 	gc="$(sc_git_global_config)"
@@ -622,7 +709,7 @@ cmd_doctor() {
 	while IFS= read -r p; do
 		[[ -n "$p" ]] || continue
 		printf '\n%sprofile %s%s\n' "$SC_BOLD" "$p" "$SC_OFF"
-		local key pub ghuser who cdir gdir cred
+		local key pub ghuser who cdir gdir cred tfrc tfmode host envname
 		key="$(sc_profile_key "$p")"
 		pub="$key.pub"
 		ghuser="$(sc_cfg_get "$p" github_user)"
@@ -682,6 +769,36 @@ cmd_doctor() {
 			fi
 		fi
 
+		if sc_tf_enabled "$p"; then
+			tfrc="$(sc_tf_rc_file "$p")"
+			if [[ ! -f "$tfrc" ]]; then
+				_dr_bad "terraform config missing: $tfrc" "switchcraft apply"
+			else
+				tfmode="$(sc_file_mode "$tfrc")"
+				if [[ "$tfmode" == 600 ]]; then
+					_dr_ok "terraform config is 600"
+				else
+					_dr_warn "terraform config is mode $tfmode" "chmod 600 $tfrc"
+				fi
+				if [[ -L "$tfrc" ]]; then
+					_dr_warn "$tfrc is a symlink" \
+						"a live token is written through it — point tf_rc at a real file"
+				fi
+				while IFS= read -r host; do
+					[[ -n "$host" ]] || continue
+					if grep -qF "credentials \"$host\"" "$tfrc"; then
+						_dr_ok "token present for $host"
+					else
+						_dr_bad "no token for $host" "check tf_token_cmd for profile $p"
+					fi
+					envname="$(sc_tf_env_name "$host")"
+					if sc_tf_env_tokens | grep -qxF "$envname"; then
+						_dr_warn "$envname in your environment overrides $host"
+					fi
+				done < <(sc_tf_hosts "$p")
+			fi
+		fi
+
 		while IFS= read -r d; do
 			[[ -n "$d" ]] || continue
 			if [[ ! -d "$d" ]]; then
@@ -692,10 +809,12 @@ cmd_doctor() {
 			real="$(sc_real "$d")"
 			if ! grep -qF "gitdir:$real/" "$gc" 2>/dev/null; then
 				_dr_bad "no includeIf rule covers $real" "switchcraft apply"
-			elif [[ -f "$d/.envrc" ]] && grep -qF "$SC_BEGIN" "$d/.envrc" 2>/dev/null; then
-				_dr_ok "$d is wired up"
-			else
+			elif [[ ! -f "$d/.envrc" ]] || ! grep -qF "$SC_BEGIN" "$d/.envrc" 2>/dev/null; then
 				_dr_bad "$d has no switchcraft .envrc" "switchcraft apply"
+			elif sc_tf_enabled "$p" && ! grep -qF 'TF_CLI_CONFIG_FILE=' "$d/.envrc"; then
+				_dr_bad "$d/.envrc has no TF_CLI_CONFIG_FILE export" "switchcraft apply"
+			else
+				_dr_ok "$d is wired up"
 			fi
 		done < <(sc_cfg_get_all "$p" dir)
 	done < <(sc_cfg_profiles)
@@ -731,7 +850,7 @@ cmd_uninstall() {
 		return 0
 	}
 
-	local p d rc
+	local p d rc tfrc
 	while IFS= read -r p; do
 		[[ -n "$p" ]] || continue
 		while IFS= read -r d; do
@@ -739,6 +858,10 @@ cmd_uninstall() {
 			[[ -f "$d/.envrc" ]] && sc_block_remove "$d/.envrc" 1
 		done < <(sc_cfg_get_all "$p" dir)
 		[[ -f "$(sc_git_profile_file "$p")" ]] && sc_run rm -f "$(sc_git_profile_file "$p")"
+		tfrc="$(sc_tf_rc_file "$p")"
+		if sc_tf_rc_is_ours "$tfrc"; then
+			sc_run rm -f "$tfrc"
+		fi
 	done < <(sc_cfg_profiles)
 
 	sc_block_remove "$(sc_git_global_config)"

@@ -84,3 +84,73 @@ load test_helper
 	[[ "$output" == *personal* ]]
 	[[ "$output" == *me@gmail.com* ]]
 }
+
+@test "a profile without Terraform gets no TF_CLI_CONFIG_FILE export" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	add_profile work work@company.com
+	# The export makes Terraform ignore the user's own ~/.terraformrc, so it
+	# must never appear for a profile that said nothing about Terraform.
+	! grep -q TF_CLI_CONFIG_FILE "$SANDBOX/projects/work/.envrc"
+	[ ! -e "$(tfrc work)" ]
+	[ "$(grep -c '^export' "$SANDBOX/projects/work/.envrc")" -eq 2 ]
+}
+
+@test "--tf-token-cmd writes a tfrc and exports TF_CLI_CONFIG_FILE" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	local cmd
+	cmd="$(tf_token_script ATfake.atlasv1.s3cr3t)"
+	sc add work --name 'Test User' --email work@company.com --tf-token-cmd "$cmd" >/dev/null 2>&1
+	grep -q "TF_CLI_CONFIG_FILE=$(tfrc work)" "$SANDBOX/projects/work/.envrc"
+	grep -q 'credentials "app.terraform.io"' "$(tfrc work)"
+	grep -q 'ATfake.atlasv1.s3cr3t' "$(tfrc work)"
+}
+
+@test "the generated tfrc is not world readable" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	run file_mode "$(tfrc work)"
+	[ "$output" = "600" ]
+}
+
+@test "repeatable --tf-host writes one credentials block per host" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" \
+		--tf-host app.terraform.io --tf-host my-tfe.corp.com >/dev/null 2>&1
+	[ "$(grep -c '^credentials ' "$(tfrc work)")" -eq 2 ]
+	grep -q 'credentials "my-tfe.corp.com"' "$(tfrc work)"
+}
+
+@test "a Terraform profile with no token still gets a tfrc, with the reason in it" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	# tf_host alone enables the layer; the export already points here, so the
+	# file has to exist even when the token could not be resolved.
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-host app.terraform.io >/dev/null 2>&1
+	[ -f "$(tfrc work)" ]
+	grep -q 'No token for app.terraform.io' "$(tfrc work)"
+	! grep -q 'token = ""' "$(tfrc work)"
+}
+
+@test "a bad --tf-host is rejected" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	run sc add work --name x --email x@y.z --tf-host 'not a host'
+	[ "$status" -ne 0 ]
+}
+
+@test "list and status show the terraform layer only when it applies" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	add_profile personal me@gmail.com
+
+	run sc list
+	[[ "$output" == *"terraform"* ]]
+	[[ "$output" == *"app.terraform.io"* ]]
+
+	run sc status "$SANDBOX/projects/work"
+	[[ "$output" == *"terraform"* ]]
+	run sc status "$SANDBOX/projects/personal"
+	[[ "$output" != *"terraform"* ]]
+}

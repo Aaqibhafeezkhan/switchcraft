@@ -89,3 +89,56 @@ load test_helper
 	[ ! -e /tmp/sc-pwned ]
 	grep -q 'A & B | C' "$SANDBOX/.config/git-profiles/weird"
 }
+
+@test "a tfrc switchcraft did not write is never clobbered" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+
+	# tf_rc points at the file switchcraft generates — but it can be aimed
+	# anywhere, including at something the user wrote by hand.
+	printf 'plugin_cache_dir = "/mine"\n' >"$SANDBOX/mine.tfrc"
+	cp "$SANDBOX/mine.tfrc" "$SANDBOX/mine.before"
+	load_libs
+	sc_cfg_append work tf_rc "$SANDBOX/mine.tfrc"
+
+	run sc apply
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"point tf_rc elsewhere"* ]]
+	diff -q "$SANDBOX/mine.before" "$SANDBOX/mine.tfrc"
+}
+
+@test "tf_rc_extra is appended verbatim and never executed" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	printf 'plugin_cache_dir = "/cache"\n# $(touch %s/pwned) `touch %s/pwned2`\n' \
+		"$SANDBOX" "$SANDBOX" >"$SANDBOX/extra.tfrc"
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	load_libs
+	sc_cfg_append work tf_rc_extra "$SANDBOX/extra.tfrc"
+	sc apply >/dev/null 2>&1
+
+	grep -q 'plugin_cache_dir = "/cache"' "$(tfrc work)"
+	grep -qF 'touch '"$SANDBOX"'/pwned' "$(tfrc work)"
+	[ ! -e "$SANDBOX/pwned" ]
+	[ ! -e "$SANDBOX/pwned2" ]
+}
+
+@test "the Terraform token never reaches the config or an .envrc" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	sc add work --name 'Test User' --email work@company.com \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)" >/dev/null 2>&1
+	! grep -q 's3cr3t' "$SANDBOX/.config/switchcraft/config"
+	! grep -rq 's3cr3t' "$SANDBOX/projects"
+	# the command that resolves it is what gets stored
+	grep -q 'tf_token_cmd = ' "$SANDBOX/.config/switchcraft/config"
+}
+
+@test "dry-run writes no tfrc" {
+	sc init --projects-root "$SANDBOX/projects" >/dev/null
+	run sc --dry-run add work --name x --email x@y.z \
+		--tf-token-cmd "$(tf_token_script ATfake.atlasv1.s3cr3t)"
+	[ "$status" -eq 0 ]
+	[ ! -e "$(tfrc work)" ]
+	! grep -q 'profile work' "$SANDBOX/.config/switchcraft/config"
+}

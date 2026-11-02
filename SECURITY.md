@@ -17,9 +17,10 @@ switchcraft is a local configuration tool. It reads and writes:
 | `~/.ssh/id_ed25519_<profile>{,.pub}` | one key pair per account, mode 600 |
 | `~/.config/switchcraft/config` | your profiles, mode 600 |
 | `~/.config/switchcraft/credentials-<profile>` | resolved HTTPS token, mode 600 |
+| `~/.config/switchcraft/terraform-<profile>.tfrc` | resolved Terraform token, mode 600 |
 | `~/.config/switchcraft/allowed_signers` | lets local git verify your own signatures |
 | your shell rc | direnv's hook, inside fences |
-| each linked directory's `.envrc` | the two exports, inside fences |
+| each linked directory's `.envrc` | the exports, inside fences |
 | `~/.claude-<profile>/`, `~/.config/gh-<profile>/` | created; written by those tools |
 
 It never sends anything anywhere. The only network access is `ssh -T
@@ -39,12 +40,19 @@ Be aware of these; they are deliberate choices, not oversights.
   `credentials-<profile>` in plaintext (mode 600) because that is the format
   git's `store` helper reads. Omit `--token-cmd` entirely if you only use SSH
   remotes — nothing is written then.
-- **`token_cmd` is executed.** It is a command line you wrote, run as you. Do
-  not put a config file you did not write into `~/.config/switchcraft/`.
+- **`token_cmd` and `tf_token_cmd` are executed.** They are command lines you
+  wrote, run as you. Do not put a config file you did not write into
+  `~/.config/switchcraft/`.
 - **Per-directory isolation is not a security boundary.** It prevents mistakes,
   not attacks. Any process you run can read every profile's keys and configs.
 - **`GH_TOKEN`/`GITHUB_TOKEN` in your environment override everything**,
   including the per-directory `gh` account. `doctor` warns when it sees one.
+- **`TF_TOKEN_<host>` in your environment outranks every `credentials` block**,
+  including the per-directory Terraform account. `doctor` warns when it sees
+  one, by name only — it never prints the value.
+- **A Terraform token is written in plaintext** to
+  `terraform-<profile>.tfrc` (mode 600), because a `credentials` block is the
+  format the Terraform CLI reads. Omit `--tf-token-cmd` and nothing is written.
 
 ## Not vulnerabilities
 
