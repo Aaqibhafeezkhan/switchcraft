@@ -49,7 +49,7 @@ add_profile() {
 load_libs() {
 	export SC_ROOT="$SC_REPO" SC_LIB="$SC_REPO/lib" SC_TEMPLATES="$SC_REPO/templates"
 	# shellcheck source=/dev/null
-	for m in common config git ssh direnv gh terraform; do source "$SC_REPO/lib/$m.sh"; done
+	for m in common deps config git ssh direnv gh terraform; do source "$SC_REPO/lib/$m.sh"; done
 }
 
 gitconfig() { cat "$SANDBOX/.gitconfig"; }

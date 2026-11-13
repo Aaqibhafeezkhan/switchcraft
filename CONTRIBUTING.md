@@ -40,6 +40,7 @@ Run `shfmt -w` to fix formatting (tabs, as in `.editorconfig`).
 ```
 bin/switchcraft     subcommand dispatch, one cmd_* function per command
 lib/common.sh       logging, dry-run plumbing, fenced-block editing, templating
+lib/deps.sh         required direnv/gh installation via existing package managers
 lib/config.sh       reads and writes ~/.config/switchcraft/config
 lib/git.sh          git profiles, includeIf block, signing, HTTPS credentials
 lib/ssh.sh          one ed25519 key per profile
@@ -61,7 +62,8 @@ will fail CI:
 3. **Everything is idempotent.** Running `apply` twice must produce
    byte-identical files.
 4. **Everything is reversible.** If you add a side effect, teach
-   `cmd_uninstall` to undo it.
+   `cmd_uninstall` to undo it. Shared runtime packages (`direnv` and `gh`) are
+   kept installed because other tools may use them.
 5. **`--dry-run` writes nothing.** Route new writes through `sc_write`,
    `sc_mkdir`, `sc_block_apply` or `sc_run` — never a bare redirect.
 6. **The config is data, never code.** It is parsed, not sourced. A backtick in

@@ -36,7 +36,7 @@ no longer depends on where it was cloned.
   and nothing is exported, so an existing `~/.terraformrc` is untouched.
 - Tokens are read from a command (`--token-cmd 'pass show github/work'`) instead
   of being stored in a config file.
-- 68 bats tests running against a throwaway `$HOME`, plus CI on Linux and macOS
+- Bats tests running against a throwaway `$HOME`, plus CI on Linux and macOS
   with shellcheck and shfmt.
 - `LICENSE` (MIT), `CONTRIBUTING.md`, `SECURITY.md`.
 
@@ -73,8 +73,15 @@ no longer depends on where it was cloned.
 
 ### Changed
 
-- `./install.sh` now only puts `switchcraft` on your `PATH` and hands over to
-  it. An existing v1 `.env` is migrated automatically.
+- `direnv` and `gh` are required. `./install.sh` installs missing dependencies
+  through an existing package manager before adding `switchcraft` to your PATH
+  or initializing its config. Existing dependencies are not upgraded, and an
+  existing v1 `.env` is migrated automatically.
+- `switchcraft apply` uses the same dependency installer and stops on failure;
+  `doctor` reports a missing `gh` as an error.
+- `./install.sh --dry-run` previews package installation and setup without
+  executing package managers or writing files. Shared dependencies remain
+  installed when switchcraft is uninstalled.
 
 ## [1.0.0] — 2026-08-02
 

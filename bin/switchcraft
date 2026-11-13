@@ -29,7 +29,7 @@ SC_LIB="$SC_ROOT/lib"
 SC_TEMPLATES="$SC_ROOT/templates"
 export SC_ROOT SC_LIB SC_TEMPLATES
 
-for _sc_mod in common config git ssh direnv gh terraform; do
+for _sc_mod in common deps config git ssh direnv gh terraform; do
 	# shellcheck source=/dev/null
 	source "$SC_LIB/$_sc_mod.sh"
 done
@@ -529,12 +529,13 @@ cmd_apply() {
 	profiles="$(sc_cfg_profiles)"
 	[[ -n "$profiles" ]] || die "no profiles yet — run: switchcraft add <name>"
 
+	sc_deps_ensure
+
 	# One pristine copy of the global git config before anything touches it —
 	# including `git config --global`, which runs before the block is written.
 	sc_backup_once "$(sc_resolve "$(sc_git_global_config)")"
 
 	info "direnv"
-	sc_direnv_install || true
 	sc_direnv_hook_apply
 
 	while IFS= read -r p; do
@@ -629,6 +630,11 @@ cmd_doctor() {
 		_dr_ok "direnv $(direnv version 2>/dev/null || true)"
 	else
 		_dr_bad "direnv is not installed" "https://direnv.net/docs/installation.html"
+	fi
+	if has_cmd gh; then
+		_dr_ok "gh is installed"
+	else
+		_dr_bad "gh is not installed" "rerun ./install.sh or install manually: https://github.com/cli/cli#installation"
 	fi
 	kind="$(sc_shell_kind)"
 	rc="$(sc_shell_rc "$kind")"

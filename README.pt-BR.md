@@ -62,8 +62,10 @@ git clone https://github.com/FernandoPazCavalcante/switchcraft.git
 cd switchcraft && ./install.sh
 ```
 
-Isso coloca o `switchcraft` no seu PATH e pergunta onde ficam seus projetos.
-Depois adicione uma identidade por conta:
+O instalador verifica `direnv` e `gh` e instala os que estiverem faltando.
+Depois coloca o `switchcraft` no seu PATH e pergunta onde ficam seus projetos.
+Dependências existentes são preservadas, sem atualização. Adicione uma
+identidade por conta:
 
 ```bash
 switchcraft add trabalho \
@@ -74,13 +76,19 @@ switchcraft add pessoal \
 ```
 
 Cada `add` gera a chave SSH, escreve o perfil do git, cria a pasta e configura o
-`.envrc` dela. Sobram dois passos manuais, uma vez por conta:
+`.envrc` dela. Abra um terminal novo para carregar o hook do direnv e complete
+os passos manuais, uma vez por conta:
 
 1. **Registrar a chave pública no GitHub** — adicione
    `~/.ssh/id_ed25519_<perfil>.pub` **duas vezes**: como *Authentication key*
    (clone/push) e como *Signing key* (para os commits aparecerem como
    Verified).
-2. **Fazer login no Claude Code** de dentro da pasta:
+2. **Fazer login no GitHub CLI** de dentro da pasta, escolhendo a conta daquele
+   perfil no navegador (se `--token-cmd` ainda não fez o login):
+   ```bash
+   cd ~/projects/trabalho && gh auth login --hostname github.com --git-protocol ssh
+   ```
+3. **Fazer login no Claude Code**, se você usa a ferramenta, de dentro da pasta:
    ```bash
    cd ~/projects/trabalho && claude   # /login, e saia com /exit
    ```
@@ -193,9 +201,9 @@ Chaves extras, todas opcionais, em `~/.config/switchcraft/config`:
 ## Requisitos
 
 - **bash** 3.2+ (funciona no macOS de fábrica), **git**, **ssh-keygen**
-- **[direnv](https://direnv.net)** — instalado para você via brew, apt, pacman, dnf, apk ou zypper
+- **[direnv](https://direnv.net)** e **[gh](https://cli.github.com)** — obrigatórios;
+  instalados automaticamente por `./install.sh` via brew, apt, pacman, dnf, apk ou zypper
 - **git 2.36+** só para o casamento por `--remote`; por diretório funciona em qualquer versão
-- opcional: **[gh](https://cli.github.com)** para contas do GitHub CLI por diretório
 - opcional: **[Claude Code](https://claude.com/claude-code)** para logins por diretório
 - opcional: **[Terraform](https://developer.hashicorp.com/terraform)** ou
   **[OpenTofu](https://opentofu.org)** para contas do HCP Terraform por diretório
@@ -204,6 +212,16 @@ Shells: bash, zsh, fish, tcsh e elvish recebem o hook automaticamente. Outros
 (nushell, por exemplo) recebem a linha para adicionar à mão.
 
 Testado em Linux e macOS no CI.
+
+O instalador usa um gerenciador e repositórios já configurados na máquina.
+Homebrew roda sem sudo; os gerenciadores Linux usam root ou sudo. Se faltar um
+gerenciador compatível, permissão ou ocorrer uma falha na instalação, o setup
+para com instruções de instalação manual antes de criar o symlink ou a
+configuração do switchcraft. Ele não instala gerenciadores nem adiciona
+repositórios. Veja os comandos previstos com `./install.sh --dry-run`.
+O `switchcraft apply` também instala dependências ausentes antes de alterar sua
+configuração. O login nas contas continua separado, e a desinstalação do
+switchcraft preserva esses pacotes compartilhados.
 
 ## Pegadinhas
 

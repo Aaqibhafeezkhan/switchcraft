@@ -63,8 +63,9 @@ git clone https://github.com/FernandoPazCavalcante/switchcraft.git
 cd switchcraft && ./install.sh
 ```
 
-That puts `switchcraft` on your PATH and asks where your projects live. Then add
-an identity per account:
+The installer checks for `direnv` and `gh` and installs whichever is missing,
+then puts `switchcraft` on your PATH and asks where your projects live. Existing
+dependencies are kept without upgrading. Then add an identity per account:
 
 ```bash
 switchcraft add work \
@@ -75,12 +76,18 @@ switchcraft add personal \
 ```
 
 Each `add` generates an SSH key, writes a git profile, creates the folder, and
-wires its `.envrc`. Two manual steps are left, once per account:
+wires its `.envrc`. Open a new terminal to load direnv's hook, then finish these
+manual steps once per account:
 
 1. **Register the public key on GitHub** — add `~/.ssh/id_ed25519_<profile>.pub`
    **twice**: once as an *Authentication key* (clone/push) and once as a
    *Signing key* (so commits show as Verified).
-2. **Log in to Claude Code** from inside the folder:
+2. **Log in to the GitHub CLI** from inside the folder, choosing that profile's
+   GitHub account in the browser (unless `--token-cmd` already logged you in):
+   ```bash
+   cd ~/projects/work && gh auth login --hostname github.com --git-protocol ssh
+   ```
+3. **Log in to Claude Code**, if you use it, from inside the folder:
    ```bash
    cd ~/projects/work && claude   # /login, then leave with /exit
    ```
@@ -196,9 +203,9 @@ tells you which layer is broken.
 ## Requirements
 
 - **bash** 3.2+ (so stock macOS works), **git**, **ssh-keygen**
-- **[direnv](https://direnv.net)** — installed for you via brew, apt, pacman, dnf, apk or zypper
+- **[direnv](https://direnv.net)** and **[gh](https://cli.github.com)** — required;
+  installed automatically by `./install.sh` via brew, apt, pacman, dnf, apk or zypper
 - **git 2.36+** only for `--remote` matching; directory matching works on any version
-- optional: **[gh](https://cli.github.com)** for per-directory GitHub CLI accounts
 - optional: **[Claude Code](https://claude.com/claude-code)** for per-directory logins
 - optional: **[Terraform](https://developer.hashicorp.com/terraform)** or
   **[OpenTofu](https://opentofu.org)** for per-directory HCP Terraform accounts
@@ -207,6 +214,16 @@ Shells: bash, zsh, fish, tcsh and elvish get their hook written automatically.
 Anything else (nushell, for example) prints the line to add yourself.
 
 Tested on Linux and macOS in CI.
+
+The installer uses a package manager and repositories already configured on
+your machine. Homebrew runs without sudo; Linux package managers run as root
+or through sudo. If no supported manager is available, privileges are missing,
+or installation fails, setup stops with manual installation instructions before
+creating the switchcraft symlink or config. It does not install a package
+manager or add repositories. Preview the commands with `./install.sh --dry-run`.
+`switchcraft apply` also installs missing dependencies before changing your
+configuration. Account logins remain a separate step, and uninstalling
+switchcraft does not remove these shared packages.
 
 ## Gotchas
 

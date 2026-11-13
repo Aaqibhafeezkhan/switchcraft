@@ -36,29 +36,6 @@ sc_direnv_hook_line() {
 	esac
 }
 
-sc_direnv_install() {
-	has_cmd direnv && return 0
-	info "installing direnv..."
-	if has_cmd brew; then
-		sc_run brew install direnv || warn "brew install direnv failed"
-	elif has_cmd apt-get && has_cmd sudo; then
-		sc_run sudo apt-get update -qq || warn "apt-get update failed"
-		sc_run sudo apt-get install -y direnv || warn "apt install direnv failed"
-	elif has_cmd pacman && has_cmd sudo; then
-		sc_run sudo pacman -S --noconfirm direnv || warn "pacman install direnv failed"
-	elif has_cmd dnf && has_cmd sudo; then
-		sc_run sudo dnf install -y direnv || warn "dnf install direnv failed"
-	elif has_cmd apk && has_cmd sudo; then
-		sc_run sudo apk add direnv || warn "apk install direnv failed"
-	elif has_cmd zypper && has_cmd sudo; then
-		sc_run sudo zypper --non-interactive install direnv || warn "zypper install direnv failed"
-	else
-		warn "install direnv manually: https://direnv.net/docs/installation.html"
-		return 1
-	fi
-	has_cmd direnv
-}
-
 # sc_direnv_hook_apply — idempotent, fenced, and honest about unknown shells.
 sc_direnv_hook_apply() {
 	local kind rc line
